@@ -2,7 +2,7 @@ import { cva } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 import type { SectionType } from "@/lib/song-model/types";
 
-const SECTION_LABEL: Record<SectionType, string> = {
+export const SECTION_LABEL: Record<SectionType, string> = {
   verse: "절",
   chorus: "후렴",
   bridge: "브릿지",
