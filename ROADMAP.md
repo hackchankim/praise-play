@@ -137,7 +137,7 @@ CI(Task 029)가 갖춰지기 전까지는 merge 직전 로컬에서 `build`/`tsc
   - Supabase 마이그레이션 SQL 초안 작성 (`supabase/migrations/` — 테이블·FK·인덱스 정의만, 실제 적용은 Task 013)
   - 완료 기준: `tsc --noEmit` 통과, 모든 페이지와 엔진이 참조할 단일 타입 소스가 확정됨
 
-- **Task 004: 외부 서비스 클라이언트 골격 및 설정 배선**
+- **Task 004: 외부 서비스 클라이언트 골격 및 설정 배선** ✅
   - 환경 변수 런타임 검증 모듈 작성 (`src/lib/env.ts`, Zod 기반 — 누락 시 부팅 시점에 실패)
   - Clerk 설치 및 Provider 배선, **Next.js 16의 `proxy.ts`(구 `middleware.ts`) 파일명 규약 확인** 후 보호 라우트 매처 골격 작성 (실제 리디렉션 로직은 Task 014)
   - Supabase 클라이언트 팩토리 스텁 (서버/브라우저 분리, Clerk Third-Party Auth 연동 자리 확보)
