@@ -85,9 +85,9 @@ Structure-First 접근법상 Phase 3에서 목 데이터 계층이 실제 API/DB
 1. `main`에서 최신 상태로 분기 (`/branch` 커맨드)
 2. 브랜치 안에서 자유롭게 커밋하며 구현, 해당 Task의 "완료 기준"(API/비즈니스 로직 Task는 테스트 체크리스트 포함)을 충족하는지 확인
 3. `npx tsc --noEmit` / `npm run lint` / `npm run format:check` / `npm run build` 통과 확인
-4. `main`으로 squash merge, 커밋 메시지는 `Task NNN: <제목>` 형식 유지 (`/merge` 커맨드)
-5. 같은 커밋에서 `ROADMAP.md`의 해당 Task를 ✅로 표시
-6. 로컬(및 필요 시 원격) 브랜치 삭제
+4. 같은 브랜치에서 `ROADMAP.md`의 해당 Task를 ✅로 표시하는 커밋 추가
+5. 브랜치를 push하고 GitHub PR을 생성해 즉시 squash merge, PR 제목은 `Task NNN: <제목>` 형식 유지 (`/merge` 커맨드) — 병합은 로컬 `git merge`가 아니라 항상 GitHub PR을 통해서만 일어난다
+6. 로컬 `main`을 pull로 최신화하고, 로컬(및 원격) 브랜치 삭제
 
 ### Phase 경계
 
