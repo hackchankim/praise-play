@@ -72,7 +72,7 @@ Praise는 매주 예배 반주를 직접 준비해야 하는 **교회 찬양 인
 
 전체 라우트·타입·스키마 골격을 먼저 세워 이후 UI팀과 백엔드팀이 병렬로 움직일 수 있는 기반을 만듭니다. 이 Phase에서는 **실제 비즈니스 로직을 구현하지 않습니다.**
 
-- **Task 001: 프로젝트 초기화 및 개발 환경 구성** - 우선순위
+- **Task 001: 프로젝트 초기화 및 개발 환경 구성** ✅
   - `npm create next-app`으로 Next.js 16 App Router + TypeScript 5.6+ + React 19 프로젝트 생성
   - TailwindCSS v4(설정파일 없는 엔진) 및 `shadcn/ui` init, Lucide React 설치
   - ESLint / Prettier / tsconfig strict 모드 및 path alias(`@/*`) 설정
