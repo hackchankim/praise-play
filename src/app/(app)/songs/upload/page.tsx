@@ -138,12 +138,14 @@ export default function SongsUploadPage() {
     };
   }, []);
 
-  const addFiles = useCallback((fileList: FileList | File[]) => {
-    const incoming = Array.from(fileList);
-    const { accepted, errors } = validateFiles(incoming);
+  const addFiles = useCallback(
+    (fileList: FileList | File[]) => {
+      const incoming = Array.from(fileList);
+      const { accepted, errors } = validateFiles(incoming);
 
-    setImages((prev) => {
-      const availableSlots = Math.max(0, HARD_MAX_COUNT - prev.length);
+      // setState updater 함수는 순수해야 하므로(Strict Mode에서 두 번 호출될 수 있음),
+      // availableSlots 계산과 setFileErrors 호출은 updater 밖(이벤트 핸들러 본문)에서 한다.
+      const availableSlots = Math.max(0, HARD_MAX_COUNT - images.length);
       const toAdd = accepted.slice(0, availableSlots);
       const allErrors =
         accepted.length > toAdd.length
@@ -156,9 +158,10 @@ export default function SongsUploadPage() {
         file,
         previewUrl: URL.createObjectURL(file),
       }));
-      return [...prev, ...newImages];
-    });
-  }, []);
+      setImages((prev) => [...prev, ...newImages]);
+    },
+    [images.length],
+  );
 
   const removeImage = useCallback((id: string) => {
     setImages((prev) => {
