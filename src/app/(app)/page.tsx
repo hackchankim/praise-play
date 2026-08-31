@@ -9,6 +9,7 @@ import { SongCard } from "@/components/domain/song-card";
 import { SetlistCard } from "@/components/domain/setlist-card";
 import { songRepository } from "@/lib/repositories/song-repository";
 import { setlistRepository } from "@/lib/repositories/setlist-repository";
+import { NewSetlistButton } from "@/components/domain/new-setlist-button";
 
 export default async function HomePage() {
   const [{ songs }, { setlists }] = await Promise.all([
@@ -25,11 +26,6 @@ export default async function HomePage() {
     }),
   );
 
-  // "새 찬양콘티 만들기" 플로우 자체(생성 폼)는 Task 010 소관이라 이 Task에서는 아직 없다.
-  // 기존 찬양콘티로 보내면 "새로 만들었다고 생각했는데 실은 기존 데이터"라는 혼란을 줄 수 있어,
-  // 항상 고정된 예시 id로 이동시켜 "지금은 데모 이동만 가능하다"는 걸 분명히 한다.
-  const newSetlistHref = routes.setlist("demo");
-
   return (
     <div className="flex flex-1 flex-col gap-8 p-6">
       <PageHeader
@@ -40,9 +36,7 @@ export default async function HomePage() {
             <Link href={routes.songsUpload()} className={cn(buttonVariants())}>
               악보 업로드
             </Link>
-            <Link href={newSetlistHref} className={cn(buttonVariants({ variant: "outline" }))}>
-              새 찬양콘티 만들기
-            </Link>
+            <NewSetlistButton variant="outline">새 찬양콘티 만들기</NewSetlistButton>
           </div>
         }
       />
@@ -69,7 +63,7 @@ export default async function HomePage() {
         )}
       </section>
 
-      <section className="flex flex-col gap-4">
+      <section id="setlists" className="flex flex-col gap-4 scroll-mt-20">
         <h2 className="text-lg font-semibold">찬양콘티</h2>
         {setlistsWithCount.length > 0 ? (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -87,11 +81,7 @@ export default async function HomePage() {
             icon={ListMusic}
             title="찬양콘티가 없습니다"
             description="새 찬양콘티를 만들어 곡을 구성해보세요."
-            action={
-              <Link href={newSetlistHref} className={cn(buttonVariants())}>
-                새 찬양콘티 만들기
-              </Link>
-            }
+            action={<NewSetlistButton>새 찬양콘티 만들기</NewSetlistButton>}
           />
         )}
       </section>
