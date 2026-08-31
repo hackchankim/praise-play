@@ -66,6 +66,39 @@ PraisePlay는 매주 예배 반주를 직접 준비해야 하는 **교회 찬양
 
 ---
 
+## 브랜치 전략
+
+Structure-First 접근법상 Phase 3에서 목 데이터 계층이 실제 API/DB로 전면 교체되므로, Phase 단위의 장기 브랜치 대신 **Task 단위의 짧은 생명주기 브랜치**를 사용한다. 머지를 잦고 작게 유지해, 충돌 위험이 가장 큰 전환 시점(Phase 2 → 3)에 거대한 병합이 몰리지 않도록 한다.
+
+### 브랜치 이름 규칙
+
+| 종류 | 패턴 | 예시 |
+|---|---|---|
+| Task 작업 | `task/NNN-슬러그` | `task/003-domain-types` |
+| 버그 수정 | `fix/NNN-슬러그` | `fix/016-extraction-retry` |
+| 문서/설정 | `chore/슬러그` | `chore/branch-strategy-docs` |
+
+번호(NNN)는 이 문서의 실제 Task ID와 항상 일치시킨다.
+
+### Task 하나당 흐름
+
+1. `main`에서 최신 상태로 분기 (`/branch` 커맨드)
+2. 브랜치 안에서 자유롭게 커밋하며 구현, 해당 Task의 "완료 기준"(API/비즈니스 로직 Task는 테스트 체크리스트 포함)을 충족하는지 확인
+3. `npx tsc --noEmit` / `npm run lint` / `npm run format:check` / `npm run build` 통과 확인
+4. `main`으로 squash merge, 커밋 메시지는 `Task NNN: <제목>` 형식 유지 (`/merge` 커맨드)
+5. 같은 커밋에서 `ROADMAP.md`의 해당 Task를 ✅로 표시
+6. 로컬(및 필요 시 원격) 브랜치 삭제
+
+### Phase 경계
+
+Phase 단위 브랜치는 만들지 않는다. 한 Phase의 모든 Task가 `main`에 병합되면 `git tag phase-N-done` 형태의 가벼운 태그만 남긴다.
+
+### main 보호 기준
+
+CI(Task 029)가 갖춰지기 전까지는 merge 직전 로컬에서 `build`/`tsc`/`lint`/`format:check` 통과를 필수 게이트로 삼는다.
+
+---
+
 ## 개발 단계
 
 ### Phase 1: 애플리케이션 골격 구축
