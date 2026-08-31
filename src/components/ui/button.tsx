@@ -31,6 +31,10 @@ const buttonVariants = cva(
         "icon-sm":
           "size-7 rounded-[min(var(--radius-md),12px)] in-data-[slot=button-group]:rounded-lg",
         "icon-lg": "size-9",
+        // 실시간 재생 화면 전용 — 최소 64px 높이(터치 타깃)와 원거리에서도 읽히는 큰 텍스트/아이콘.
+        playback:
+          "h-16 gap-2 rounded-xl px-6 text-base font-semibold has-data-[icon=inline-end]:pr-5 has-data-[icon=inline-start]:pl-5 [&_svg:not([class*='size-'])]:size-6",
+        "playback-icon": "size-16 rounded-xl [&_svg:not([class*='size-'])]:size-7",
       },
     },
     defaultVariants: {

@@ -152,7 +152,7 @@ CI(Task 029)가 갖춰지기 전까지는 merge 직전 로컬에서 `build`/`tsc
 
 모든 화면을 **하드코딩된 더미 데이터**로 완성합니다. 백엔드 없이도 전체 사용자 여정을 체험할 수 있게 만들어, Phase 3의 API 교체 범위를 데이터 레이어 한 곳으로 국한시킵니다.
 
-- **Task 005: 디자인 시스템 및 공통 컴포넌트 라이브러리 구축**
+- **Task 005: 디자인 시스템 및 공통 컴포넌트 라이브러리 구축** ✅
   - 디자인 토큰 정의 (색상·타이포·간격·radius) — **예배 현장 저조도 환경을 고려해 다크를 기본값으로 하되, 라이트 테마도 함께 지원**
   - shadcn/ui 컴포넌트 도입: Button, Card, Input, Select, Dialog, Sheet, Tabs, Badge, Progress, Skeleton, Toast, Dropdown, Tooltip
   - 도메인 공통 컴포넌트: `SongCard`, `SetlistCard`, `SectionBadge`, `ChordChip`, `EmptyState`, `PageHeader`, `LoadingState`, `ErrorState`

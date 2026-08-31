@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { Button } from "@/components/ui/button";
+import { ErrorState } from "@/components/domain/error-state";
 
 export default function GlobalError({
   error,
@@ -14,11 +14,8 @@ export default function GlobalError({
     console.error(error);
   }, [error]);
 
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-4 p-10 text-center">
-      <p className="text-lg font-semibold">문제가 발생했습니다.</p>
-      <p className="text-sm text-muted-foreground">{error.message}</p>
-      <Button onClick={reset}>다시 시도</Button>
-    </div>
-  );
+  // 프로덕션에서는 서버/DB 구현 세부사항이 새어나가지 않도록 원본 메시지를 숨긴다.
+  const description = process.env.NODE_ENV === "development" ? error.message : undefined;
+
+  return <ErrorState description={description} onRetry={reset} className="flex-1" />;
 }
