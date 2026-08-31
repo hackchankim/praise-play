@@ -301,7 +301,7 @@ export function ComponentGallery() {
             <DialogTrigger render={<Button variant="outline" />}>다이얼로그 열기</DialogTrigger>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>세트리스트 삭제</DialogTitle>
+                <DialogTitle>찬양콘티 삭제</DialogTitle>
                 <DialogDescription>이 작업은 되돌릴 수 없습니다.</DialogDescription>
               </DialogHeader>
               <DialogFooter showCloseButton>

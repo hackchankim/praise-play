@@ -75,7 +75,7 @@ export class MockSetlistRepository implements SetlistRepository {
     await delay(300);
     const target = setlists.find((s) => s.id === setlistId);
     if (!target) {
-      throw new NotFoundError("세트리스트", setlistId);
+      throw new NotFoundError("찬양콘티", setlistId);
     }
 
     const newItems: SetlistItem[] = request.items.map((item) => ({

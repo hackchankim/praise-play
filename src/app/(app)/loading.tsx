@@ -1,6 +1,6 @@
 import { Skeleton } from "@/components/ui/skeleton";
 
-// 홈 화면(Server Component)이 곡·세트리스트 목록을 페칭하는 동안 보여줄 스켈레톤.
+// 홈 화면(Server Component)이 곡·찬양콘티 목록을 페칭하는 동안 보여줄 스켈레톤.
 // 실제 카드 그리드와 동일한 개수/배치로 그려 레이아웃 시프트를 최소화한다.
 function CardGridSkeleton() {
   return (

@@ -15,7 +15,7 @@ export default async function SetlistPlayPage({
       <div>
         <h1 className="text-2xl font-semibold">실시간 재생</h1>
         <p className="text-sm text-muted-foreground">
-          세트리스트 ID: {setlistId} · 사전 로딩·섹션 전환 UI 자리 (Task 011, 021~025에서 구현)
+          찬양콘티 ID: {setlistId} · 사전 로딩·섹션 전환 UI 자리 (Task 011, 021~025에서 구현)
         </p>
       </div>
 

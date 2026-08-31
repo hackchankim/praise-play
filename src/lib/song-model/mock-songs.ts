@@ -2,7 +2,7 @@
 // 실제 존재하는 찬양을 그대로 베끼지 않고, "1절/2절/후렴/브릿지" 구조를 갖춘 예시 가사·코드 진행을
 // 직접 작성했다. Phase 3(Task 013)에서 이 배열들과 동일한 형태로 Supabase 시드 스크립트를 작성한다.
 //
-// 편곡/트랙 생성 로직은 arrangement-blueprint.ts, 세트리스트는 mock-setlists.ts로 분리했다 —
+// 편곡/트랙 생성 로직은 arrangement-blueprint.ts, 찬양콘티는 mock-setlists.ts로 분리했다 —
 // 이 파일은 순수 데이터 픽스처만 담고, 실제 요청마다 실행되는 런타임 로직(Tonal.js 기반 편곡 생성)은
 // 섞지 않는다.
 
@@ -762,7 +762,7 @@ const songBChordEvents: ChordEvent[] = [
   },
 ];
 
-// ===== 곡 C: "빛 되신 주" — 세트리스트를 채우기 위한 경쾌한 스타일의 짧은 더미 곡 =====
+// ===== 곡 C: "빛 되신 주" — 찬양콘티를 채우기 위한 경쾌한 스타일의 짧은 더미 곡 =====
 
 export const SONG_C_ID = "song-light-of-the-lord";
 

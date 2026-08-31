@@ -4,7 +4,7 @@ import { routes } from "@/lib/routes";
 
 const NAV_ITEMS = [
   { href: routes.home(), label: "홈", icon: Home },
-  { href: routes.setlist("demo"), label: "세트리스트", icon: ListMusic },
+  { href: routes.setlist("demo"), label: "찬양콘티", icon: ListMusic },
 ] as const;
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
