@@ -6,6 +6,7 @@ import type {
   GenrePreset,
   Line,
   Section,
+  Setlist,
   SetlistItem,
   SetlistWithItems,
   Song,
@@ -92,6 +93,11 @@ export interface GenerateArrangementResponse {
 }
 
 // ===== 세트리스트 (Task 020) =====
+
+export interface ListSetlistsResponse {
+  setlists: Setlist[];
+  nextCursor: string | null;
+}
 
 export interface CreateSetlistRequest {
   name: string;
