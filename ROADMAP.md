@@ -160,7 +160,7 @@ CI(Task 029)가 갖춰지기 전까지는 merge 직전 로컬에서 `build`/`tsc
   - 폼 공통 래퍼 구현 (React Hook Form + Zod resolver + 필드 에러 표시 패턴)
   - 완료 기준: 컴포넌트 갤러리 페이지(`/_dev/ui`)에서 전 컴포넌트가 라이트/다크 양쪽에서 정상 렌더링
 
-- **Task 006: 더미 데이터 팩토리 및 목 데이터 액세스 계층 구현**
+- **Task 006: 더미 데이터 팩토리 및 목 데이터 액세스 계층 구현** ✅
   - 실제 한국 찬양 1~2곡 기준의 더미 `Song` + `Section` + `Line` + `ChordEvent` 트리 작성 (절/후렴/브릿지 포함, `needs_review` 사례 포함)
   - 더미 `Arrangement` + `InstrumentTrack`(4악기 노트 이벤트) 및 더미 `Setlist`/`SetlistItem` 3곡 세트 작성
   - **데이터 액세스 인터페이스(`SongRepository`, `SetlistRepository`, `ArrangementRepository`) 정의 후 목 구현체 제공**
