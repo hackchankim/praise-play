@@ -81,7 +81,7 @@ Praise는 매주 예배 반주를 직접 준비해야 하는 **교회 찬양 인
   - `README.md`에 로컬 실행 절차 정리, `npm run dev` / `npm run build` 무오류 확인
   - 완료 기준: 빈 프로젝트가 로컬에서 기동되고 프로덕션 빌드가 통과
 
-- **Task 002: 라우트 구조 및 공통 레이아웃 골격 구현**
+- **Task 002: 라우트 구조 및 공통 레이아웃 골격 구현** ✅
   - App Router 기반 9개 페이지의 빈 껍데기 생성
     - `(auth)/sign-in`, `(auth)/sign-up`
     - `(app)/` 홈, `(app)/songs/upload`, `(app)/songs/[songId]/extracting`, `(app)/songs/[songId]/correction`, `(app)/songs/[songId]/arrangement`
