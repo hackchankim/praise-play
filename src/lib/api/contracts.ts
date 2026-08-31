@@ -103,6 +103,11 @@ export interface CreateSetlistRequest {
   name: string;
 }
 
+/** 세트리스트 이름 변경 (PATCH /api/setlists/[id] 계약과 대응) */
+export interface UpdateSetlistRequest {
+  name: string;
+}
+
 export interface UpdateSetlistItemsRequest {
   items: Array<Pick<SetlistItem, "songId" | "arrangementId" | "orderIndex">>;
 }

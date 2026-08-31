@@ -4,7 +4,9 @@ import { routes } from "@/lib/routes";
 
 const NAV_ITEMS = [
   { href: routes.home(), label: "홈", icon: Home },
-  { href: routes.setlist("demo"), label: "찬양콘티", icon: ListMusic },
+  // 찬양콘티 전체 목록 페이지는 MVP 범위에 없어(라우트 표는 ROADMAP.md 참고), 홈의 찬양콘티
+  // 섹션(#setlists)으로 스크롤 이동시킨다.
+  { href: `${routes.home()}#setlists`, label: "찬양콘티", icon: ListMusic },
 ] as const;
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {

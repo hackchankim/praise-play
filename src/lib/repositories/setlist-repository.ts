@@ -7,6 +7,7 @@ import type {
   GetSetlistResponse,
   ListSetlistsResponse,
   UpdateSetlistItemsRequest,
+  UpdateSetlistRequest,
 } from "@/lib/api/contracts";
 import { MOCK_SETLIST_ITEMS, MOCK_SETLISTS } from "@/lib/song-model/mock-setlists";
 import type { Setlist, SetlistItem, SetlistWithItems } from "@/lib/song-model/types";
@@ -34,6 +35,8 @@ export interface SetlistRepository {
   list(params?: ListSetlistsParams): Promise<ListSetlistsResponse>;
   getById(setlistId: string): Promise<GetSetlistResponse | null>;
   create(request: CreateSetlistRequest, ownerId: string): Promise<Setlist>;
+  /** 세트리스트 이름 변경 */
+  updateName(setlistId: string, request: UpdateSetlistRequest): Promise<Setlist>;
   /**
    * 세트리스트 항목 전체 교체. UpdateSetlistItemsRequest 계약 자체가 id 없이 곡/편곡/순서
    * 배열 전체를 받는 형태라, 추가·제거·순서변경을 모두 이 단일 메서드로 표현한다.
@@ -66,6 +69,17 @@ export class MockSetlistRepository implements SetlistRepository {
     };
     setlists = [...setlists, newSetlist];
     return newSetlist;
+  }
+
+  async updateName(setlistId: string, request: UpdateSetlistRequest): Promise<Setlist> {
+    await delay(200);
+    const target = setlists.find((s) => s.id === setlistId);
+    if (!target) {
+      throw new NotFoundError("찬양콘티", setlistId);
+    }
+    const updated: Setlist = { ...target, name: request.name };
+    setlists = setlists.map((s) => (s.id === setlistId ? updated : s));
+    return updated;
   }
 
   async updateItems(
