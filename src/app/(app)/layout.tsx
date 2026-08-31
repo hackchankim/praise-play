@@ -12,7 +12,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-full flex-1 flex-col">
       <header className="flex h-14 items-center justify-between border-b px-4">
         <Link href={routes.home()} className="text-base font-semibold">
-          Praise
+          PraisePlay
         </Link>
         <nav className="hidden items-center gap-4 sm:flex">
           {NAV_ITEMS.map(({ href, label }) => (
