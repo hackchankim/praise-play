@@ -20,7 +20,7 @@ export default async function SongArrangementPage({
       </div>
 
       <Link href={routes.setlist("demo")} className={cn(buttonVariants(), "w-fit")}>
-        세트리스트로 이동 (더미)
+        찬양콘티로 이동 (더미)
       </Link>
     </div>
   );

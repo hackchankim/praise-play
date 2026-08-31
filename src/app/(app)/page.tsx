@@ -16,8 +16,8 @@ export default async function HomePage() {
     setlistRepository.list(),
   ]);
 
-  // 목록 화면에는 세트리스트별 곡 수가 필요하지만 ListSetlistsResponse 계약에는 포함되지 않는다.
-  // 세트리스트 개수가 많지 않은 MVP 단계라 각 세트리스트를 getById로 다시 조회해 items.length를 구한다.
+  // 목록 화면에는 찬양콘티별 곡 수가 필요하지만 ListSetlistsResponse 계약에는 포함되지 않는다.
+  // 찬양콘티 개수가 많지 않은 MVP 단계라 각 찬양콘티를 getById로 다시 조회해 items.length를 구한다.
   const setlistsWithCount = await Promise.all(
     setlists.map(async (setlist) => {
       const detail = await setlistRepository.getById(setlist.id);
@@ -25,8 +25,8 @@ export default async function HomePage() {
     }),
   );
 
-  // "새 세트리스트 만들기" 플로우 자체(생성 폼)는 Task 010 소관이라 이 Task에서는 아직 없다.
-  // 기존 세트리스트로 보내면 "새로 만들었다고 생각했는데 실은 기존 데이터"라는 혼란을 줄 수 있어,
+  // "새 찬양콘티 만들기" 플로우 자체(생성 폼)는 Task 010 소관이라 이 Task에서는 아직 없다.
+  // 기존 찬양콘티로 보내면 "새로 만들었다고 생각했는데 실은 기존 데이터"라는 혼란을 줄 수 있어,
   // 항상 고정된 예시 id로 이동시켜 "지금은 데모 이동만 가능하다"는 걸 분명히 한다.
   const newSetlistHref = routes.setlist("demo");
 
@@ -34,14 +34,14 @@ export default async function HomePage() {
     <div className="flex flex-1 flex-col gap-8 p-6">
       <PageHeader
         title="홈"
-        description="저장된 곡과 세트리스트를 관리하세요."
+        description="저장된 곡과 찬양콘티를 관리하세요."
         action={
           <div className="flex flex-wrap gap-2">
             <Link href={routes.songsUpload()} className={cn(buttonVariants())}>
               악보 업로드
             </Link>
             <Link href={newSetlistHref} className={cn(buttonVariants({ variant: "outline" }))}>
-              새 세트리스트 만들기
+              새 찬양콘티 만들기
             </Link>
           </div>
         }
@@ -70,7 +70,7 @@ export default async function HomePage() {
       </section>
 
       <section className="flex flex-col gap-4">
-        <h2 className="text-lg font-semibold">세트리스트</h2>
+        <h2 className="text-lg font-semibold">찬양콘티</h2>
         {setlistsWithCount.length > 0 ? (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {setlistsWithCount.map(({ setlist, songCount }) => (
@@ -85,11 +85,11 @@ export default async function HomePage() {
         ) : (
           <EmptyState
             icon={ListMusic}
-            title="세트리스트가 없습니다"
-            description="새 세트리스트를 만들어 곡을 구성해보세요."
+            title="찬양콘티가 없습니다"
+            description="새 찬양콘티를 만들어 곡을 구성해보세요."
             action={
               <Link href={newSetlistHref} className={cn(buttonVariants())}>
-                새 세트리스트 만들기
+                새 찬양콘티 만들기
               </Link>
             }
           />
