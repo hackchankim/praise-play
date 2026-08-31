@@ -249,6 +249,12 @@ function ChordChipHandle({
     >
       <div
         onPointerDown={handlePointerDown}
+        onClick={(event) => {
+          // 드래그를 마친 뒤 브라우저가 합성하는 click 이벤트가 줄 컨테이너의
+          // "빈 공간 클릭 시 코드 추가" 핸들러(handleRowClick)까지 버블링되면
+          // 이동한 칩과 별개로 새 칩이 같은 위치에 추가되어 데이터가 중복된다.
+          event.stopPropagation();
+        }}
         className={cn(
           "cursor-grab touch-none active:cursor-grabbing",
           isHighlighted && "animate-pulse rounded-md ring-2 ring-primary ring-offset-1",
