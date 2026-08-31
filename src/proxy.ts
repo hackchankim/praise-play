@@ -13,8 +13,9 @@ export default clerkMiddleware((_auth, req) => {
 });
 
 export const config = {
+  // 이 패턴이 이미 /api/*를 포함하므로(정적 파일 확장자만 제외) 별도 "/(api|trpc)(.*)" 항목은
+  // 불필요하다 — Clerk quickstart 보일러플레이트에는 있지만 tRPC를 쓰지 않아 제거함.
   matcher: [
     "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
-    "/(api|trpc)(.*)",
   ],
 };

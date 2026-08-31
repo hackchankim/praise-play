@@ -10,7 +10,12 @@ export async function createSupabaseServerClient() {
     cookies: {
       getAll: () => cookieStore.getAll(),
       setAll: (cookiesToSet) => {
-        cookiesToSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options));
+        try {
+          cookiesToSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options));
+        } catch {
+          // Server Component에서 호출되면 Next.js가 쿠키 쓰기를 막는다 — 세션 갱신은
+          // proxy.ts(미들웨어)가 담당하므로 여기서는 무시해도 안전하다.
+        }
       },
     },
     // Clerk Third-Party Auth 연동 자리: Clerk 세션 JWT를 accessToken()으로 전달하면

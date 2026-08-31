@@ -24,5 +24,7 @@ export function createR2Client() {
       accessKeyId: env.R2_ACCESS_KEY_ID,
       secretAccessKey: env.R2_SECRET_ACCESS_KEY,
     },
+    // 버킷 이름에 점(.)이 포함되는 등 virtual-hosted 스타일 URL이 깨지는 경우
+    // forcePathStyle: true 를 추가해야 할 수 있다 (Task 015에서 실제 버킷명 확정 후 재검토).
   });
 }
