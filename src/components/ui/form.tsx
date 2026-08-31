@@ -105,27 +105,27 @@ function FormLabel({ className, ...props }: React.ComponentProps<typeof Label>) 
   );
 }
 
-function FormControl({ children, ...props }: React.ComponentProps<"div">) {
+// 단일 자식(input 등)에 접근성 속성만 주입한다. Radix Slot과 달리 wrapper 엘리먼트를 만들지
+// 않으며, 자식이 이미 갖고 있는 id/aria-* 값이 있으면 그 값을 우선한다(자동 생성값으로
+// 조용히 덮어쓰지 않음).
+function FormControl({ children }: { children: React.ReactNode }) {
   const { error, formItemId, formDescriptionId, formMessageId } = useFormField();
 
   if (!React.isValidElement(children)) return null;
 
-  return (
-    <div data-slot="form-control" {...props}>
-      {React.cloneElement(
-        children as React.ReactElement<{
-          id?: string;
-          "aria-describedby"?: string;
-          "aria-invalid"?: boolean;
-        }>,
-        {
-          id: formItemId,
-          "aria-describedby": error ? `${formDescriptionId} ${formMessageId}` : formDescriptionId,
-          "aria-invalid": !!error,
-        },
-      )}
-    </div>
-  );
+  const child = children as React.ReactElement<{
+    id?: string;
+    "aria-describedby"?: string;
+    "aria-invalid"?: boolean;
+  }>;
+
+  return React.cloneElement(child, {
+    id: child.props.id ?? formItemId,
+    "aria-describedby":
+      child.props["aria-describedby"] ??
+      (error ? `${formDescriptionId} ${formMessageId}` : formDescriptionId),
+    "aria-invalid": child.props["aria-invalid"] ?? !!error,
+  });
 }
 
 function FormDescription({ className, ...props }: React.ComponentProps<"p">) {

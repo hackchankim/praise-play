@@ -14,5 +14,8 @@ export default function GlobalError({
     console.error(error);
   }, [error]);
 
-  return <ErrorState description={error.message} onRetry={reset} className="flex-1" />;
+  // 프로덕션에서는 서버/DB 구현 세부사항이 새어나가지 않도록 원본 메시지를 숨긴다.
+  const description = process.env.NODE_ENV === "development" ? error.message : undefined;
+
+  return <ErrorState description={description} onRetry={reset} className="flex-1" />;
 }

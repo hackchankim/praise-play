@@ -21,6 +21,9 @@ interface SongCardProps {
   href: string;
 }
 
+// 카드 전체를 <Link>로 감싼다. 카드 내부에 버튼 등 인터랙티브 요소를 추가할 경우
+// <a> 안에 <button>이 중첩되어 무효한 마크업이 되므로, 그때는 onClick/role 기반
+// 카드 패턴으로 전환할 것.
 export function SongCard({ song, href }: SongCardProps) {
   return (
     <Link href={href}>
