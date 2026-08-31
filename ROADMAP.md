@@ -362,6 +362,8 @@ CI(Task 029)가 갖춰지기 전까지는 merge 직전 로컬에서 `build`/`tsc
 - **Task 020: 곡·세트리스트 CRUD API 및 홈 연동 (F011, F012)**
   - 곡 목록 API (`GET /api/songs`) — 상태·최신순 정렬, 페이지네이션
   - 세트리스트 CRUD API (`GET/POST/PATCH/DELETE /api/setlists`, `/api/setlists/[id]`)
+    - `ListSetlistsResponse`에 세트리스트별 곡 수(예: `itemCount`) 필드 추가 — Task 007 홈 화면이
+      목 구현체에서 `getById`로 N+1 재조회하던 임시 방편을 제거하고 목록 응답만으로 곡 수를 표시하게 함
   - 세트리스트 항목 API — 곡 추가/제거, `order_index` 재정렬, 항목별 `arrangement_id` 지정
   - 홈·세트리스트 구성 페이지의 목 리포지토리를 실제 API로 교체
   - 곡 삭제 시 연관 데이터(섹션/줄/코드/편곡/트랙/세트리스트 항목) 정리 정책 적용
