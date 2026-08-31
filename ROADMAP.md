@@ -125,7 +125,7 @@ CI(Task 029)가 갖춰지기 전까지는 merge 직전 로컬에서 `build`/`tsc
   - 페이지 간 이동 경로를 상수화한 `src/lib/routes.ts` 작성
   - 완료 기준: 9개 페이지 URL이 모두 응답하고, 앱 셸 내비게이션만으로 전체 사용자 여정을 클릭으로 순회 가능
 
-- **Task 003: 도메인 타입 정의 및 Supabase 스키마 설계**
+- **Task 003: 도메인 타입 정의 및 Supabase 스키마 설계** ✅
   - `src/lib/song-model/types.ts`에 PRD 데이터 모델 전체를 TypeScript 인터페이스로 정의
     - `User`, `Song`, `Section`, `Line`, `ChordEvent`, `Arrangement`, `InstrumentTrack`, `Setlist`, `SetlistItem`
   - 타이밍 규약 명문화: **모든 타이밍은 beat 단위로 저장**하고 재생 시점에만 초로 환산
