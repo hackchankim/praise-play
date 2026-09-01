@@ -146,6 +146,10 @@ export function ArrangementView({ songId }: ArrangementViewProps) {
               key={meta.preset}
               role="button"
               tabIndex={0}
+              // 카드 안에 악기별 설명 문단이 여러 줄 들어있어, 이름을 따로 안 주면 스크린리더가
+              // 카드 전체 텍스트를 통째로 버튼 이름으로 읽는다(QA 확인) — 짧은 이름으로 대체.
+              aria-label={`${meta.label} 프리셋 선택`}
+              aria-pressed={selected}
               onClick={() => setSelectedPreset(meta.preset)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") setSelectedPreset(meta.preset);

@@ -24,6 +24,15 @@ export interface PlaybackState {
   isPlaying: boolean;
   loopSection: boolean;
   pending: PendingTransition | null;
+  /**
+   * 세트리스트 마지막 곡의 마지막 섹션이 자연히 끝났는지. tick()의 반환값(순수 함수라 리턴하는
+   * ended 불리언)을 setInterval 콜백 안에서 외부 변수로 빼돌려 setPhase("ended")를 호출하는
+   * 예전 방식은, 그 외부 변수가 setState 업데이터 실행과 정확히 같은 타이밍에 읽힌다는 보장이
+   * 약해 간헐적으로 전환이 누락됐다(재현 확인됨: isPlaying=false인데 "예배가 끝났습니다" 화면으로
+   * 못 넘어가고 재생 화면에 그대로 멈춰 있는 버그). state 자체에 플래그를 둬서, 소비하는 쪽이
+   * useEffect로 안정적으로 파생시키게 한다.
+   */
+  ended: boolean;
 }
 
 export function createInitialPlaybackState(): PlaybackState {
@@ -34,6 +43,7 @@ export function createInitialPlaybackState(): PlaybackState {
     isPlaying: false,
     loopSection: false,
     pending: null,
+    ended: false,
   };
 }
 
@@ -96,16 +106,16 @@ export function nextSectionTarget(
 /**
  * 재생 중 매 tick마다 호출한다. deltaBeats만큼 시간을 흘려보내고, 그 결과로 상태가 어떻게
  * 바뀌어야 하는지 계산해 새 상태를 반환한다(순수 함수 — 실제 setState는 호출부에서 한다).
+ * "세트리스트가 끝났다"는 사실도 반환값이 아니라 state.ended 필드로 담아 보낸다 — 예전엔 호출부의
+ * 외부 변수로 따로 빼돌렸는데, setState 업데이터 실행 타이밍과 그 변수를 읽는 타이밍이 항상
+ * 정확히 맞는다는 보장이 약해 간헐적으로 "예배가 끝났습니다" 화면 전환이 누락되는 버그가 있었다.
+ * state 안에 있으면 소비하는 쪽이 useEffect로 안정적으로 파생시킬 수 있다.
  *
  * 우선순위: (1) 예약된 전환이 있고 마디 경계를 넘었다면 그 목표로 즉시 커밋한다.
  * (2) 예약이 없는데 섹션이 자연히 끝났다면 구간 반복 여부에 따라 반복하거나 다음으로 진행한다.
  */
-export function tick(
-  state: PlaybackState,
-  queue: QueueEntry[],
-  deltaBeats: number,
-): { state: PlaybackState; ended: boolean } {
-  if (!state.isPlaying) return { state, ended: false };
+export function tick(state: PlaybackState, queue: QueueEntry[], deltaBeats: number): PlaybackState {
+  if (!state.isPlaying) return state;
 
   const section = currentSection(state, queue);
   const song = queue[state.songIndex].song;
@@ -120,37 +130,31 @@ export function tick(
     // 전환을 취소했을 때 되돌아갈 "현재 섹션 안"이 사라져 곧장 다음으로 튕겨나가게 된다.
     if (nextBar > prevBar || nextElapsed >= section.lengthBeats) {
       return {
-        state: {
-          ...state,
-          songIndex: state.pending.songIndex,
-          sectionIndex: state.pending.sectionIndex,
-          elapsedBeats: 0,
-          pending: null,
-        },
-        ended: false,
+        ...state,
+        songIndex: state.pending.songIndex,
+        sectionIndex: state.pending.sectionIndex,
+        elapsedBeats: 0,
+        pending: null,
       };
     }
-    return { state: { ...state, elapsedBeats: nextElapsed }, ended: false };
+    return { ...state, elapsedBeats: nextElapsed };
   }
 
   if (nextElapsed >= section.lengthBeats) {
     if (state.loopSection) {
-      return { state: { ...state, elapsedBeats: nextElapsed - section.lengthBeats }, ended: false };
+      return { ...state, elapsedBeats: nextElapsed - section.lengthBeats };
     }
     const target = nextSectionTarget(state, queue);
     if (!target) {
-      return { state: { ...state, isPlaying: false }, ended: true };
+      return { ...state, elapsedBeats: nextElapsed, isPlaying: false, ended: true };
     }
     return {
-      state: {
-        ...state,
-        songIndex: target.songIndex,
-        sectionIndex: target.sectionIndex,
-        elapsedBeats: 0,
-      },
-      ended: false,
+      ...state,
+      songIndex: target.songIndex,
+      sectionIndex: target.sectionIndex,
+      elapsedBeats: 0,
     };
   }
 
-  return { state: { ...state, elapsedBeats: nextElapsed }, ended: false };
+  return { ...state, elapsedBeats: nextElapsed };
 }

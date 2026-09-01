@@ -122,6 +122,7 @@ export function PlaybackScreen({
         currentSongIndex={state.songIndex}
         currentSectionIndex={state.sectionIndex}
         currentLineIndex={currentLineIndex(section, state.elapsedBeats)}
+        isPlaying={state.isPlaying}
         loopSection={state.loopSection}
         pendingSongIndex={state.pending?.songIndex ?? null}
         pendingSectionIndex={state.pending?.sectionIndex ?? null}

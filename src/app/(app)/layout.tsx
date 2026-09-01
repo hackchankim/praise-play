@@ -39,7 +39,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
       <main className="flex flex-1 flex-col">{children}</main>
 
-      <nav className="flex h-16 items-center justify-around border-t sm:hidden">
+      {/* 콘텐츠가 뷰포트보다 길면(예: 곡이 많은 홈 화면) 하단까지 스크롤해야만 탭바가 보이던
+          문제(QA 확인) — sticky로 항상 화면 하단에 붙어 있게 한다 */}
+      <nav className="sticky bottom-0 z-10 flex h-16 items-center justify-around border-t bg-background sm:hidden">
         {NAV_ITEMS.map(({ href, label, icon: Icon }) => (
           <Link
             key={href}

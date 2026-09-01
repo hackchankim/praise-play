@@ -87,9 +87,12 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
   // 동시에 존재하게 되어 chordNodeRefs 같은 uiKey 기반 참조가 어느 쪽을 가리킬지 불안정해진다
   // (예: "다음 검토 항목" 스크롤이 화면에 없는 숨겨진 사본을 가리켜 아무 일도 안 일어나는 버그).
   // 그래서 뷰포트를 감지해 둘 중 하나만 실제로 렌더링한다.
+  // 768px(태블릿 세로)는 좌우 분할 에디터를 담기엔 너무 좁다 — 코드 칩 배치용 모노스페이스
+  // 가사 입력란이 실측 108px까지 줄어들어 텍스트가 잘렸다(QA 확인). 1024px(lg)부터만 분할하고,
+  // 그 아래는 태블릿도 모바일과 같은 탭 전환 레이아웃을 쓴다.
   const [isDesktop, setIsDesktop] = useState(true);
   useEffect(() => {
-    const mql = window.matchMedia("(min-width: 768px)");
+    const mql = window.matchMedia("(min-width: 1024px)");
     const update = () => setIsDesktop(mql.matches);
     update();
     mql.addEventListener("change", update);
@@ -233,7 +236,7 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
     return (
       <div className="flex flex-1 flex-col gap-6 p-6">
         <Skeleton className="h-8 w-64" />
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <Skeleton className="h-96" />
           <Skeleton className="h-96" />
         </div>
@@ -428,7 +431,7 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
 
       {/* 데스크톱: 좌우 분할. 모바일: 탭 전환. 코드 칩 참조가 중복되지 않도록 한쪽만 마운트한다 */}
       {isDesktop ? (
-        <div className="grid flex-1 gap-4 md:grid-cols-2">
+        <div className="grid flex-1 gap-4 lg:grid-cols-2">
           <div className="h-[calc(100vh-14rem)]">{imagePanel}</div>
           <div className="h-[calc(100vh-14rem)] overflow-y-auto pr-1">{editorPanel}</div>
         </div>
