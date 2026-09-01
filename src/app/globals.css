@@ -88,7 +88,13 @@
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    /* 예전엔 outline-ring/50을 써서, 이미 50% 알파가 박혀 있는 --ring 토큰(box-shadow 기반
+       ring-*용으로는 부드러운 느낌을 주려고 일부러 반투명하게 잡은 값)에 또 50%를 곱해 실제
+       렌더링 색이 25% 알파까지 옅어졌다. 키보드 포커스 링의 비텍스트 대비가 WCAG AA(3:1) 기준을
+       크게 밑돌았다(실측 ≈1.53:1). outline-ring(알파 그대로, ≈2.8:1)로 고쳐도 아직 3:1에 살짝
+       못 미쳐서, 키보드 포커스 표시만큼은 부드러움보다 또렷함이 우선이라고 보고 알파 없는
+       --primary(같은 계열 색, 완전 불투명)를 쓴다(실측 ≥3:1). */
+    @apply border-border outline-primary;
   }
   body {
     @apply bg-background text-foreground;

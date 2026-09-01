@@ -16,6 +16,7 @@ interface SetlistLyricsFeedProps {
   currentSongIndex: number;
   currentSectionIndex: number;
   currentLineIndex: number;
+  isPlaying: boolean;
   loopSection: boolean;
   pendingSongIndex: number | null;
   pendingSectionIndex: number | null;
@@ -35,6 +36,7 @@ export const SetlistLyricsFeed = forwardRef<SetlistLyricsFeedHandle, SetlistLyri
       currentSongIndex,
       currentSectionIndex,
       currentLineIndex,
+      isPlaying,
       loopSection,
       pendingSongIndex,
       pendingSectionIndex,
@@ -101,7 +103,7 @@ export const SetlistLyricsFeed = forwardRef<SetlistLyricsFeedHandle, SetlistLyri
                   </span>
                   {isCurrentSong && (
                     <span className="ml-auto shrink-0 text-xs font-normal text-primary">
-                      재생 중
+                      {isPlaying ? "재생 중" : "일시정지"}
                     </span>
                   )}
                 </button>
@@ -175,9 +177,13 @@ export const SetlistLyricsFeed = forwardRef<SetlistLyricsFeedHandle, SetlistLyri
                                     className={cn(
                                       "text-lg leading-snug sm:text-xl",
                                       status === "current" && "font-semibold text-foreground",
-                                      status === "past" && "text-muted-foreground/50",
-                                      (status === "upcoming" || status === "neutral") &&
-                                        "text-muted-foreground",
+                                      status !== "current" && "text-muted-foreground",
+                                      // 이미 부른 줄과 아직 안 부른 줄을 구분하는 신호가 필요하지만,
+                                      // 이전엔 opacity로 더 옅게 만들어 WCAG AA(4.5:1)에 못 미쳤다
+                                      // (실측 2.34:1). 텍스트 대비는 건드리지 않고 취소선으로만
+                                      // "이미 지나간 줄"임을 표시한다.
+                                      status === "past" &&
+                                        "line-through decoration-muted-foreground/70",
                                     )}
                                   >
                                     {line.lyrics || " "}

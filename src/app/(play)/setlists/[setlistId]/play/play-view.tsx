@@ -85,19 +85,26 @@ export function PlayView({ setlistId }: PlayViewProps) {
   useEffect(() => {
     if (phase !== "playing") return;
     const interval = setInterval(() => {
-      let justEnded = false;
       setState((prev) => {
         if (!prev.isPlaying) return prev;
         const song = queueRef.current[prev.songIndex].song;
         const deltaBeats = (song.tempo / 60) * (TICK_MS / 1000);
-        const result = tick(prev, queueRef.current, deltaBeats);
-        justEnded = result.ended;
-        return result.state;
+        const next = tick(prev, queueRef.current, deltaBeats);
+        // effectivePhase가 렌더 시점에 "ended"로 파생되는 동안 phase 자체는 계속 "playing"에
+        // 머물러 있어([phase] 의존성이 다시 바뀌지 않아) 이 effect의 클린업이 실행되지 않는다.
+        // 세트리스트가 끝나는 순간 타이머 스스로 멈춰야 한다.
+        if (next.ended) clearInterval(interval);
+        return next;
       });
-      if (justEnded) setPhase("ended");
     }, TICK_MS);
     return () => clearInterval(interval);
   }, [phase]);
+
+  // 세트리스트 마지막 곡이 자연히 끝났다는 사실(state.ended)을 별도 effect로 phase에 동기화하지
+  // 않는다("You Might Not Need an Effect") — 대신 렌더링 시점에 파생시킨다. effect + setPhase
+  // 왕복에 기대면 그 타이밍이 tick 인터벌의 setState 업데이터 실행과 정확히 맞물린다는 보장이
+  // 약해, 실제로 "예배가 끝났습니다" 화면 전환이 간헐적으로 누락되는 버그가 있었다.
+  const effectivePhase = state.ended && phase === "playing" ? "ended" : phase;
 
   const handleTogglePlay = useCallback(() => {
     setState((prev) => ({ ...prev, isPlaying: !prev.isPlaying }));
@@ -150,7 +157,7 @@ export function PlayView({ setlistId }: PlayViewProps) {
   // 스크롤 대신 가사 영역만 내부 스크롤하게 하려고), 다른 단계의 콘텐츠가 뷰포트보다 길어지면
   // (예: 곡이 많은 세트리스트의 사전 로딩 자산 목록) 잘려서 안 보이게 된다. 각 단계도 스스로
   // min-h-0 + overflow-y-auto로 내부 스크롤할 수 있게 해둔다.
-  if (phase === "loading") {
+  if (effectivePhase === "loading") {
     return (
       <div className="relative flex min-h-0 flex-1 flex-col items-center justify-center gap-4 overflow-y-auto p-6">
         {homeExitLink}
@@ -160,7 +167,7 @@ export function PlayView({ setlistId }: PlayViewProps) {
     );
   }
 
-  if (phase === "error") {
+  if (effectivePhase === "error") {
     return (
       <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
         {homeExitLink}
@@ -177,7 +184,7 @@ export function PlayView({ setlistId }: PlayViewProps) {
     );
   }
 
-  if (phase === "not_found") {
+  if (effectivePhase === "not_found") {
     return (
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 overflow-y-auto p-6 text-center">
         <p className="text-lg font-semibold">찬양콘티를 찾을 수 없습니다</p>
@@ -187,7 +194,7 @@ export function PlayView({ setlistId }: PlayViewProps) {
     );
   }
 
-  if (phase === "empty") {
+  if (effectivePhase === "empty") {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-6">
         <EmptyState
@@ -203,7 +210,7 @@ export function PlayView({ setlistId }: PlayViewProps) {
     );
   }
 
-  if (phase === "preloading") {
+  if (effectivePhase === "preloading") {
     return (
       <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
         {homeExitLink}
@@ -212,7 +219,7 @@ export function PlayView({ setlistId }: PlayViewProps) {
     );
   }
 
-  if (phase === "ended") {
+  if (effectivePhase === "ended") {
     return (
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 overflow-y-auto p-6 text-center">
         <p className="text-lg font-semibold">예배가 끝났습니다</p>
