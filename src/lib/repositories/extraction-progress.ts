@@ -4,6 +4,8 @@
 // 시간 경과에 따라 진행률과 함께 방출한다. Phase 3에서는 이 스트림을 실제 Inngest 잡의
 // 진행 상태 구독(예: Supabase Realtime)으로 교체하면 되므로, 이벤트 형태를 그 용도에 맞춰 설계했다.
 
+import { runAbortableGenerator, sleep } from "@/lib/repositories/simulator-utils";
+
 export const EXTRACTION_STAGES = [
   "upload",
   "text_extraction",
@@ -45,24 +47,6 @@ export interface ExtractionSimulatorOptions {
   failAtStage?: ExtractionStage;
   /** 지정하면 취소 시 진행 중인 대기를 즉시 중단한다 (최대 tickIntervalMs만큼 늦게 반응하지 않도록) */
   signal?: AbortSignal;
-}
-
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new DOMException("Aborted", "AbortError"));
-      return;
-    }
-    const timeoutId = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    function onAbort() {
-      clearTimeout(timeoutId);
-      reject(new DOMException("Aborted", "AbortError"));
-    }
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
 }
 
 /**
@@ -121,24 +105,8 @@ export function runExtractionSimulator(
   onEvent: (event: ExtractionProgressEvent) => void,
   options: ExtractionSimulatorOptions = {},
 ): () => void {
-  const controller = new AbortController();
-
-  void (async () => {
-    try {
-      for await (const event of simulateExtractionProgress({
-        ...options,
-        signal: controller.signal,
-      })) {
-        onEvent(event);
-      }
-    } catch (error) {
-      if (!(error instanceof DOMException && error.name === "AbortError")) {
-        throw error;
-      }
-    }
-  })();
-
-  return () => {
-    controller.abort();
-  };
+  return runAbortableGenerator(
+    (signal) => simulateExtractionProgress({ ...options, signal }),
+    onEvent,
+  );
 }

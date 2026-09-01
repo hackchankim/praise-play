@@ -73,9 +73,4 @@ export const GENRE_PRESET_LIST: GenrePresetMeta[] = [
   GENRE_PRESET_META.acoustic_intimate,
 ];
 
-export const INSTRUMENT_LABEL: Record<Instrument, string> = {
-  piano: "피아노",
-  guitar: "기타",
-  bass: "베이스",
-  drums: "드럼",
-};
+export { INSTRUMENT_LABEL } from "@/lib/song-model/labels";
