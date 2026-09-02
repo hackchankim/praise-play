@@ -269,7 +269,7 @@ CI(Task 029)가 갖춰지기 전까지는 merge 직전 로컬에서 `build`/`tsc
   - [ ] 저장 중 실패 시 트랜잭션 롤백으로 부분 저장이 남지 않는가
   - [ ] Playwright MCP: 홈 접속 → 실제 DB의 시드 곡 목록이 렌더링되는지 검증
 
-- **Task 014: Clerk 인증 연동 및 접근 제어 구현**
+- **Task 014: Clerk 인증 연동 및 접근 제어 구현** ✅
   - Clerk Provider 및 로그인/회원가입 UI를 실제 Clerk 인증 흐름에 연결
   - Next.js 16 `proxy.ts`에서 보호 라우트 매처 구성, **비로그인 홈 접근 시 로그인 페이지 자동 리디렉션**
   - Clerk `user_id` ↔ `users` 테이블 동기화(최초 로그인 시 레코드 생성, `display_name`, `created_at`)

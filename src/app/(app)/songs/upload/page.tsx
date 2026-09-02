@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent, DragEvent, KeyboardEvent } from "react";
 import { useRouter } from "next/navigation";
+import { useUser } from "@clerk/nextjs";
 import {
   DndContext,
   closestCenter,
@@ -27,7 +28,6 @@ import { PageHeader } from "@/components/domain/page-header";
 import { cn } from "@/lib/utils";
 import { routes } from "@/lib/routes";
 import { songRepository } from "@/lib/repositories/song-repository";
-import { MOCK_USER } from "@/lib/song-model/mock-songs";
 
 const RECOMMENDED_MIN = 4;
 const RECOMMENDED_MAX = 5;
@@ -112,6 +112,7 @@ function SortableThumbnail({
 
 export default function SongsUploadPage() {
   const router = useRouter();
+  const { user } = useUser();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [images, setImages] = useState<UploadImage[]>([]);
   const [fileErrors, setFileErrors] = useState<string[]>([]);
@@ -211,12 +212,12 @@ export default function SongsUploadPage() {
     [openFilePicker],
   );
 
-  const canSubmit = images.length > 0 && !isSubmitting;
+  const canSubmit = images.length > 0 && !isSubmitting && !!user;
   const outOfRecommendedRange =
     images.length > 0 && (images.length < RECOMMENDED_MIN || images.length > RECOMMENDED_MAX);
 
   const handleSubmit = useCallback(async () => {
-    if (images.length === 0) return;
+    if (images.length === 0 || !user) return;
     setIsSubmitting(true);
     setUploadProgress(0);
     setSubmitError(null);
@@ -236,16 +237,13 @@ export default function SongsUploadPage() {
         }, 80);
       });
 
-      // TODO(Task 013 이후): songRepository가 Supabase 구현체로 바뀌면 이 호출은 서버 전용
-      // 자격증명이 필요해지므로, 클라이언트 컴포넌트에 남겨두면 안 되고 Server Action으로 옮겨야 한다.
-      // 지금은 순수 인메모리 목이라 클라이언트에서 직접 호출해도 무방하다.
-      const song = await songRepository.create({ title: "새 악보", createdBy: MOCK_USER.id });
+      const song = await songRepository.create({ title: "새 악보", createdBy: user.id });
       router.push(`${routes.songExtracting(song.id)}?count=${images.length}`);
     } catch {
       setSubmitError("업로드를 시작하지 못했습니다. 다시 시도해주세요.");
       setIsSubmitting(false);
     }
-  }, [images.length, router]);
+  }, [images.length, router, user]);
 
   return (
     <div className="flex flex-1 flex-col gap-6 p-6">
