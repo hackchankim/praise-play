@@ -78,6 +78,48 @@ export function currentLineIndex(section: SectionWithLines, elapsedBeats: number
   return bestIndex;
 }
 
+/**
+ * 지금 곡 전체(모든 섹션 합산) 길이 대비 현재 위치를 beat 단위로 반환한다. 재생 화면의 곡 진행
+ * 바 표시용 — 섹션 반복(loopSection)으로 elapsedBeats가 실제 섹션 길이를 넘나드는 경우는 없으므로
+ * (tick()이 항상 [0, lengthBeats) 범위로 되돌린다) 별도 보정 없이 그대로 더하면 된다.
+ */
+export function songProgressBeats(
+  state: PlaybackState,
+  queue: QueueEntry[],
+): { elapsedBeats: number; totalBeats: number } {
+  const sections = queue[state.songIndex].song.sections;
+  const totalBeats = sections.reduce((sum, sec) => sum + sec.lengthBeats, 0);
+  const beatsBeforeSection = sections
+    .slice(0, state.sectionIndex)
+    .reduce((sum, sec) => sum + sec.lengthBeats, 0);
+  return { elapsedBeats: beatsBeforeSection + state.elapsedBeats, totalBeats };
+}
+
+function songDurationSeconds(song: QueueEntry["song"]): number {
+  if (song.tempo <= 0) return 0;
+  const totalBeats = song.sections.reduce((sum, sec) => sum + sec.lengthBeats, 0);
+  return (totalBeats / song.tempo) * 60;
+}
+
+/**
+ * 세트리스트 전체(모든 곡 합산) 길이 대비 현재 위치를 초 단위로 반환한다. 곡마다 템포가 달라
+ * beat를 그대로 이어붙일 수 없으므로(같은 1beat라도 곡마다 실제 걸리는 시간이 다르다), 곡별로
+ * beat를 각자의 템포로 초 환산한 뒤 이어붙인다.
+ */
+export function setlistProgressSeconds(
+  state: PlaybackState,
+  queue: QueueEntry[],
+): { elapsedSeconds: number; totalSeconds: number } {
+  const totalSeconds = queue.reduce((sum, entry) => sum + songDurationSeconds(entry.song), 0);
+  const secondsBeforeCurrentSong = queue
+    .slice(0, state.songIndex)
+    .reduce((sum, entry) => sum + songDurationSeconds(entry.song), 0);
+  const song = queue[state.songIndex].song;
+  const { elapsedBeats } = songProgressBeats(state, queue);
+  const elapsedInSongSeconds = song.tempo > 0 ? (elapsedBeats / song.tempo) * 60 : 0;
+  return { elapsedSeconds: secondsBeforeCurrentSong + elapsedInSongSeconds, totalSeconds };
+}
+
 export function computeSectionDisplayLabels(sections: Section[]): string[] {
   const seenByType = new Map<Section["type"], number>();
   return sections.map((section) => {
