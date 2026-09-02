@@ -20,11 +20,19 @@ export const dynamic = "force-dynamic";
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   // proxy.ts가 이미 이 라우트 그룹 전체를 보호하므로 여기 도달했다면 로그인된 사용자다.
   // 최초 로그인 시 users 테이블에 레코드가 없을 수 있어(Clerk 계정과 우리 DB 레코드는 별개),
-  // 매 렌더마다 멱등하게 동기화한다 — ensureUser()는 ON CONFLICT DO NOTHING이라 이미 있으면
-  // 사실상 빈 upsert 한 번만 더 나간다.
+  // 매 렌더마다 멱등하게 동기화한다. 이 동기화 자체가 실패해도(일시적 네트워크 문제 등) 페이지
+  // 렌더링 전체를 막을 이유는 없다 — 이 라우트 그룹 안에 에러 바운더리가 따로 없어, 여기서
+  // 예외를 던지면 앱 전체가 에러 화면으로 떨어진다.
   const user = await currentUser();
   if (user) {
-    await ensureUser(user.id, user.fullName ?? user.username ?? user.id);
+    try {
+      await ensureUser(
+        user.id,
+        user.fullName ?? user.username ?? user.primaryEmailAddress?.emailAddress ?? user.id,
+      );
+    } catch (error) {
+      console.error("사용자 동기화 실패", error);
+    }
   }
 
   return (

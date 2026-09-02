@@ -212,7 +212,7 @@ export default function SongsUploadPage() {
     [openFilePicker],
   );
 
-  const canSubmit = images.length > 0 && !isSubmitting;
+  const canSubmit = images.length > 0 && !isSubmitting && !!user;
   const outOfRecommendedRange =
     images.length > 0 && (images.length < RECOMMENDED_MIN || images.length > RECOMMENDED_MAX);
 

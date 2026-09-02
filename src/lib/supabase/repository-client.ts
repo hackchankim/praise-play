@@ -21,6 +21,7 @@ import { env } from "@/lib/env";
 declare global {
   interface Window {
     Clerk?: {
+      load(): Promise<void>;
       session?: { getToken(): Promise<string | null> } | null;
     };
   }
@@ -28,6 +29,11 @@ declare global {
 
 async function getClerkAccessToken(): Promise<string | null> {
   if (typeof window !== "undefined") {
+    // window.Clerk는 ClerkProvider가 별도 스크립트로 비동기 로드하므로, 하이드레이션 직후
+    // 실행되는 effect가 이보다 먼저 도달하면 아직 undefined일 수 있다. load()는 이미 로드된
+    // 뒤에 호출해도 즉시 반환하는 멱등 함수라, 매번 await해도 안전하다 — 이걸 생략하면 그
+    // 레이스에서 토큰이 null로 빠져 anon 권한(지금은 전부 거부)으로 조용히 요청이 나간다.
+    await window.Clerk?.load();
     return (await window.Clerk?.session?.getToken()) ?? null;
   }
   const { auth } = await import("@clerk/nextjs/server");
