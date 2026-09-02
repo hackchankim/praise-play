@@ -1,4 +1,4 @@
-// SetlistRepository — 세트리스트 데이터 액세스 인터페이스와 목 구현체 (Task 006).
+// SetlistRepository — 세트리스트 데이터 액세스 인터페이스와 Supabase 구현체 (Task 006 인터페이스, Task 013 구현체).
 // 모든 메서드 시그니처는 src/lib/api/contracts.ts의 세트리스트 계약(ListSetlistsResponse,
 // CreateSetlistRequest, UpdateSetlistItemsRequest, GetSetlistResponse — Task020)과 그대로 대응한다.
 
@@ -9,20 +9,46 @@ import type {
   UpdateSetlistItemsRequest,
   UpdateSetlistRequest,
 } from "@/lib/api/contracts";
-import { MOCK_SETLIST_ITEMS, MOCK_SETLISTS } from "@/lib/song-model/mock-setlists";
 import type { Setlist, SetlistItem, SetlistWithItems } from "@/lib/song-model/types";
-import { createId, delay } from "@/lib/repositories/mock-utils";
+import { createId } from "@/lib/repositories/mock-utils";
 import { NotFoundError } from "@/lib/repositories/errors";
+import { supabaseRepositoryClient } from "@/lib/supabase/repository-client";
 
-let setlists: Setlist[] = [...MOCK_SETLISTS];
-let setlistItems: SetlistItem[] = [...MOCK_SETLIST_ITEMS];
+interface SetlistRow {
+  id: string;
+  name: string;
+  owner_id: string;
+  created_at: string;
+}
 
-function assemble(setlist: Setlist): SetlistWithItems {
+interface SetlistItemRow {
+  id: string;
+  setlist_id: string;
+  song_id: string;
+  arrangement_id: string;
+  order_index: number;
+}
+
+function mapSetlist(row: SetlistRow): Setlist {
+  return { id: row.id, name: row.name, ownerId: row.owner_id, createdAt: row.created_at };
+}
+
+function mapSetlistItem(row: SetlistItemRow): SetlistItem {
   return {
-    ...setlist,
-    items: setlistItems
-      .filter((item) => item.setlistId === setlist.id)
-      .sort((a, b) => a.orderIndex - b.orderIndex),
+    id: row.id,
+    setlistId: row.setlist_id,
+    songId: row.song_id,
+    arrangementId: row.arrangement_id,
+    orderIndex: row.order_index,
+  };
+}
+
+function mapSetlistWithItems(
+  row: SetlistRow & { setlist_items: SetlistItemRow[] },
+): SetlistWithItems {
+  return {
+    ...mapSetlist(row),
+    items: [...row.setlist_items].sort((a, b) => a.order_index - b.order_index).map(mapSetlistItem),
   };
 }
 
@@ -45,70 +71,82 @@ export interface SetlistRepository {
   delete(setlistId: string): Promise<void>;
 }
 
-export class MockSetlistRepository implements SetlistRepository {
+export class SupabaseSetlistRepository implements SetlistRepository {
   async list(params: ListSetlistsParams = {}): Promise<ListSetlistsResponse> {
-    await delay();
-    const sorted = [...setlists].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    const limit = params.limit ?? sorted.length;
-    return { setlists: sorted.slice(0, limit), nextCursor: null };
+    let query = supabaseRepositoryClient
+      .from("setlists")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (params.limit !== undefined) query = query.limit(params.limit);
+
+    const { data, error } = await query;
+    if (error) throw new Error(`찬양콘티 목록 조회 실패: ${error.message}`);
+    return { setlists: (data ?? []).map(mapSetlist), nextCursor: null };
   }
 
   async getById(setlistId: string): Promise<GetSetlistResponse | null> {
-    await delay();
-    const found = setlists.find((s) => s.id === setlistId);
-    return found ? { setlist: assemble(found) } : null;
+    const { data, error } = await supabaseRepositoryClient
+      .from("setlists")
+      .select("*, setlist_items(*)")
+      .eq("id", setlistId)
+      .maybeSingle<SetlistRow & { setlist_items: SetlistItemRow[] }>();
+    if (error) throw new Error(`찬양콘티 조회 실패: ${error.message}`);
+    return data ? { setlist: mapSetlistWithItems(data) } : null;
   }
 
   async create(request: CreateSetlistRequest, ownerId: string): Promise<Setlist> {
-    await delay(200);
-    const newSetlist: Setlist = {
-      id: createId("setlist"),
-      name: request.name,
-      ownerId,
-      createdAt: new Date().toISOString(),
-    };
-    setlists = [...setlists, newSetlist];
-    return newSetlist;
+    const { data, error } = await supabaseRepositoryClient
+      .from("setlists")
+      .insert({ id: createId("setlist"), name: request.name, owner_id: ownerId })
+      .select()
+      .single<SetlistRow>();
+    if (error) throw new Error(`찬양콘티 생성 실패: ${error.message}`);
+    return mapSetlist(data);
   }
 
   async updateName(setlistId: string, request: UpdateSetlistRequest): Promise<Setlist> {
-    await delay(200);
-    const target = setlists.find((s) => s.id === setlistId);
-    if (!target) {
-      throw new NotFoundError("찬양콘티", setlistId);
-    }
-    const updated: Setlist = { ...target, name: request.name };
-    setlists = setlists.map((s) => (s.id === setlistId ? updated : s));
-    return updated;
+    const { data, error } = await supabaseRepositoryClient
+      .from("setlists")
+      .update({ name: request.name })
+      .eq("id", setlistId)
+      .select()
+      .maybeSingle<SetlistRow>();
+    if (error) throw new Error(`찬양콘티 이름 변경 실패: ${error.message}`);
+    if (!data) throw new NotFoundError("찬양콘티", setlistId);
+    return mapSetlist(data);
   }
 
   async updateItems(
     setlistId: string,
     request: UpdateSetlistItemsRequest,
   ): Promise<GetSetlistResponse> {
-    await delay(300);
-    const target = setlists.find((s) => s.id === setlistId);
-    if (!target) {
-      throw new NotFoundError("찬양콘티", setlistId);
-    }
-
-    const newItems: SetlistItem[] = request.items.map((item) => ({
+    // 기존 항목 삭제와 신규 항목 삽입을 하나의 함수 호출(=하나의 트랜잭션)로 묶는다 — 따로
+    // 두 번 호출하면 삭제만 성공하고 삽입이 실패했을 때 세트리스트가 통째로 비어버린다
+    // (code-review 지적, save_song_correction과 동일한 이유).
+    const items = request.items.map((item) => ({
       id: createId(`${setlistId}-item`),
-      setlistId,
       songId: item.songId,
       arrangementId: item.arrangementId,
       orderIndex: item.orderIndex,
     }));
-    setlistItems = [...setlistItems.filter((i) => i.setlistId !== setlistId), ...newItems];
+    const { error } = await supabaseRepositoryClient.rpc("replace_setlist_items", {
+      p_setlist_id: setlistId,
+      p_items: items,
+    });
+    if (error) {
+      if (error.code === "PT404") throw new NotFoundError("찬양콘티", setlistId);
+      throw new Error(`찬양콘티 항목 저장 실패: ${error.message}`);
+    }
 
-    return { setlist: assemble(target) };
+    const result = await this.getById(setlistId);
+    if (!result) throw new NotFoundError("찬양콘티", setlistId);
+    return result;
   }
 
   async delete(setlistId: string): Promise<void> {
-    await delay(200);
-    setlistItems = setlistItems.filter((i) => i.setlistId !== setlistId);
-    setlists = setlists.filter((s) => s.id !== setlistId);
+    const { error } = await supabaseRepositoryClient.from("setlists").delete().eq("id", setlistId);
+    if (error) throw new Error(`찬양콘티 삭제 실패: ${error.message}`);
   }
 }
 
-export const setlistRepository: SetlistRepository = new MockSetlistRepository();
+export const setlistRepository: SetlistRepository = new SupabaseSetlistRepository();
