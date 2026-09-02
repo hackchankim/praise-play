@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useUser } from "@clerk/nextjs";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,7 +22,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { setlistRepository } from "@/lib/repositories/setlist-repository";
-import { MOCK_USER } from "@/lib/song-model/mock-songs";
 import type { Setlist } from "@/lib/song-model/types";
 
 const NEW_SETLIST_VALUE = "__new__";
@@ -42,6 +42,7 @@ export function AddToSetlistDialog({
   arrangementId,
   onAdded,
 }: AddToSetlistDialogProps) {
+  const { user } = useUser();
   const [setlists, setSetlists] = useState<Setlist[]>([]);
   const [selected, setSelected] = useState<string>(NEW_SETLIST_VALUE);
   const [newName, setNewName] = useState("새 찬양콘티");
@@ -66,16 +67,12 @@ export function AddToSetlistDialog({
   }, [open]);
 
   const handleConfirm = async () => {
+    if (!user) return;
     setSubmitting(true);
     try {
       const setlistId =
         selected === NEW_SETLIST_VALUE
-          ? (
-              await setlistRepository.create(
-                { name: newName.trim() || "새 찬양콘티" },
-                MOCK_USER.id,
-              )
-            ).id
+          ? (await setlistRepository.create({ name: newName.trim() || "새 찬양콘티" }, user.id)).id
           : selected;
 
       const detail = await setlistRepository.getById(setlistId);
@@ -154,7 +151,7 @@ export function AddToSetlistDialog({
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={submitting}>
             취소
           </Button>
-          <Button onClick={handleConfirm} disabled={submitting}>
+          <Button onClick={handleConfirm} disabled={submitting || !user}>
             추가
           </Button>
         </DialogFooter>

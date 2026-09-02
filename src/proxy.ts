@@ -7,7 +7,7 @@ import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
 const isProtectedRoute = createRouteMatcher(["/", "/songs(.*)", "/setlists(.*)"]);
 
-export default clerkMiddleware((_auth, req) => {
+export default clerkMiddleware(async (auth, req) => {
   // 프로덕션에서는 개발자 전용 컴포넌트 갤러리(/_dev/ui)를 미들웨어 단계에서 차단한다.
   // 페이지 쪽 notFound()만으로는 App Router 스트리밍 특성상 실제 HTTP 상태가 200으로
   // 나갈 수 있어(React가 <html> 셸을 이미 200으로 보내기 시작한 뒤 트리거되기 때문),
@@ -17,7 +17,9 @@ export default clerkMiddleware((_auth, req) => {
   }
 
   if (isProtectedRoute(req)) {
-    // Task 014: await auth.protect() 로 비로그인 사용자를 /sign-in으로 리디렉션
+    // 비로그인 사용자는 auth.protect()가 자동으로 /sign-in으로 리디렉션한다
+    // (로그인 후 원래 요청한 경로로 돌아오도록 redirect_url을 함께 붙여준다).
+    await auth.protect();
   }
 });
 

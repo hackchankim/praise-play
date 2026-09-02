@@ -1,6 +1,9 @@
 import Link from "next/link";
-import { Home, ListMusic, LogOut } from "lucide-react";
+import { currentUser } from "@clerk/nextjs/server";
+import { UserButton } from "@clerk/nextjs";
+import { Home, ListMusic } from "lucide-react";
 import { routes } from "@/lib/routes";
+import { ensureUser } from "@/lib/repositories/user-repository";
 
 const NAV_ITEMS = [
   { href: routes.home(), label: "홈", icon: Home },
@@ -9,7 +12,21 @@ const NAV_ITEMS = [
   { href: `${routes.home()}#setlists`, label: "찬양콘티", icon: ListMusic },
 ] as const;
 
-export default function AppLayout({ children }: { children: React.ReactNode }) {
+// currentUser()와 리포지토리(Supabase 클라이언트가 Clerk 토큰을 붙이려 auth()=headers()를
+// 호출한다, Task 014)가 이 레이아웃과 그 하위 모든 페이지를 요청마다 다르게 만든다 — 명시하지
+// 않으면 Next.js가 빌드 시점 정적 생성을 시도하다가 "headers()가 요청 스코프 밖" 에러로 실패한다.
+export const dynamic = "force-dynamic";
+
+export default async function AppLayout({ children }: { children: React.ReactNode }) {
+  // proxy.ts가 이미 이 라우트 그룹 전체를 보호하므로 여기 도달했다면 로그인된 사용자다.
+  // 최초 로그인 시 users 테이블에 레코드가 없을 수 있어(Clerk 계정과 우리 DB 레코드는 별개),
+  // 매 렌더마다 멱등하게 동기화한다 — ensureUser()는 ON CONFLICT DO NOTHING이라 이미 있으면
+  // 사실상 빈 upsert 한 번만 더 나간다.
+  const user = await currentUser();
+  if (user) {
+    await ensureUser(user.id, user.fullName ?? user.username ?? user.id);
+  }
+
   return (
     <div className="flex min-h-full flex-1 flex-col">
       <header className="flex h-14 items-center justify-between border-b px-4">
@@ -26,14 +43,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               {label}
             </Link>
           ))}
-          <button
-            type="button"
-            disabled
-            className="flex items-center gap-1 text-sm text-muted-foreground opacity-50"
-          >
-            <LogOut className="size-4" />
-            로그아웃
-          </button>
+          <UserButton />
         </nav>
       </header>
 
@@ -52,6 +62,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             {label}
           </Link>
         ))}
+        <UserButton />
       </nav>
     </div>
   );
