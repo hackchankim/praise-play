@@ -251,7 +251,7 @@ CI(Task 029)가 갖춰지기 전까지는 merge 직전 로컬에서 `build`/`tsc
 
 목 리포지토리를 실제 API·엔진으로 교체하고, MVP의 기술적 심장인 **추출 파이프라인**과 **실시간 재생 엔진**을 구현합니다.
 
-- **Task 013: Supabase 스키마 마이그레이션 및 데이터 액세스 계층 구현** - 우선순위
+- **Task 013: Supabase 스키마 마이그레이션 및 데이터 액세스 계층 구현** - 우선순위 ✅
   - PRD 데이터 모델 9개 테이블 마이그레이션 적용
     - `users`, `songs`, `sections`, `lines`, `chord_events`, `arrangements`, `instrument_tracks`, `setlists`, `setlist_items`
   - FK 및 자기참조 처리: `sections.repeat_target_section_id → sections.id`, `setlist_items.arrangement_id → arrangements.id`
