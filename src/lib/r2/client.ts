@@ -24,6 +24,12 @@ export function createR2Client() {
       accessKeyId: env.R2_ACCESS_KEY_ID,
       secretAccessKey: env.R2_SECRET_ACCESS_KEY,
     },
+    // AWS SDK v3는 기본값(WHEN_SUPPORTED)이면 PutObject presigned URL에도 CRC32 체크섬을
+    // 자동으로 서명에 끼워 넣는다. 브라우저의 실제 PUT은(우리가 만든 게 아니라 순수 XHR이라)
+    // 그 체크섬 헤더를 보내지 않으므로 R2가 요청을 거부하는데, 그 응답에 CORS 헤더가 없어
+    // 브라우저에는 실제 원인과 무관하게 "CORS 정책에 막힘"으로 보인다(실제 재현·확인함).
+    // 우리가 체크섬 검증을 직접 요청하지 않으니 WHEN_REQUIRED로 꺼둔다.
+    requestChecksumCalculation: "WHEN_REQUIRED",
     // 버킷 이름에 점(.)이 포함되는 등 virtual-hosted 스타일 URL이 깨지는 경우
     // forcePathStyle: true 를 추가해야 할 수 있다 (Task 015에서 실제 버킷명 확정 후 재검토).
   });

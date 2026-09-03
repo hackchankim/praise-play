@@ -21,13 +21,14 @@ import {
   arrayMove,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { UploadCloud, X, GripVertical } from "lucide-react";
+import { RotateCw, UploadCloud, X, GripVertical } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { PageHeader } from "@/components/domain/page-header";
 import { cn } from "@/lib/utils";
 import { routes } from "@/lib/routes";
 import { songRepository } from "@/lib/repositories/song-repository";
+import { deleteUploadedImage, uploadImage } from "@/lib/uploads/upload-image";
 
 const RECOMMENDED_MIN = 4;
 const RECOMMENDED_MAX = 5;
@@ -35,10 +36,16 @@ const HARD_MAX_COUNT = 10;
 const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024;
 const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/heic"];
 
+type UploadStatus = "idle" | "uploading" | "uploaded" | "failed";
+
 interface UploadImage {
   id: string;
   file: File;
   previewUrl: string;
+  status: UploadStatus;
+  progress: number;
+  objectKey?: string;
+  error?: string;
 }
 
 function validateFiles(files: File[]): { accepted: File[]; errors: string[] } {
@@ -62,10 +69,12 @@ function SortableThumbnail({
   image,
   index,
   onRemove,
+  onRetry,
 }: {
   image: UploadImage;
   index: number;
   onRemove: (id: string) => void;
+  onRetry: (id: string) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: image.id,
@@ -79,6 +88,7 @@ function SortableThumbnail({
       className={cn(
         "group relative aspect-3/4 overflow-hidden rounded-lg border bg-card",
         isDragging && "z-10 opacity-50",
+        image.status === "failed" && "border-destructive",
       )}
     >
       {/* 블롭 URL 미리보기라 next/image 최적화 대상이 아니므로 일반 img 태그를 쓴다 */}
@@ -106,6 +116,26 @@ function SortableThumbnail({
       <span className="absolute bottom-1.5 left-1.5 rounded bg-black/60 px-1.5 py-0.5 text-xs text-white">
         {index + 1}
       </span>
+
+      {image.status === "uploading" && (
+        <div className="absolute inset-x-1.5 bottom-1.5">
+          <Progress value={image.progress} className="h-1" />
+        </div>
+      )}
+
+      {image.status === "failed" && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/70 p-2 text-center">
+          <p className="text-xs text-white">{image.error ?? "업로드 실패"}</p>
+          <button
+            type="button"
+            onClick={() => onRetry(image.id)}
+            className="flex items-center gap-1 rounded-full bg-white/15 px-2.5 py-1 text-xs text-white hover:bg-white/25"
+          >
+            <RotateCw className="size-3" />
+            재시도
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -118,7 +148,6 @@ export default function SongsUploadPage() {
   const [fileErrors, setFileErrors] = useState<string[]>([]);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const sensors = useSensors(
@@ -158,6 +187,8 @@ export default function SongsUploadPage() {
         id: `img-${crypto.randomUUID()}`,
         file,
         previewUrl: URL.createObjectURL(file),
+        status: "idle",
+        progress: 0,
       }));
       setImages((prev) => [...prev, ...newImages]);
     },
@@ -167,7 +198,12 @@ export default function SongsUploadPage() {
   const removeImage = useCallback((id: string) => {
     setImages((prev) => {
       const target = prev.find((image) => image.id === id);
-      if (target) URL.revokeObjectURL(target.previewUrl);
+      if (target) {
+        URL.revokeObjectURL(target.previewUrl);
+        // 이미 R2에 올라간 뒤 목록에서 뺀 이미지는 그대로 두면 고아 객체가 된다 — 베스트
+        // 에포트로 정리한다(실패해도 UI 흐름을 막지 않는다).
+        if (target.objectKey) void deleteUploadedImage(target.objectKey);
+      }
       return prev.filter((image) => image.id !== id);
     });
   }, []);
@@ -212,6 +248,54 @@ export default function SongsUploadPage() {
     [openFilePicker],
   );
 
+  /** 이미지 하나를 업로드하고, 이번 호출로 얻은 결과({id, objectKey})를 반환한다(실패 시 null). */
+  const uploadOne = useCallback(
+    async (image: UploadImage): Promise<{ id: string; objectKey: string } | null> => {
+      setImages((prev) =>
+        prev.map((img) =>
+          img.id === image.id
+            ? { ...img, status: "uploading", progress: 0, error: undefined }
+            : img,
+        ),
+      );
+      try {
+        const objectKey = await uploadImage(image.file, (percent) => {
+          setImages((prev) =>
+            prev.map((img) => (img.id === image.id ? { ...img, progress: percent } : img)),
+          );
+        });
+        setImages((prev) =>
+          prev.map((img) =>
+            img.id === image.id ? { ...img, status: "uploaded", objectKey, progress: 100 } : img,
+          ),
+        );
+        return { id: image.id, objectKey };
+      } catch (error) {
+        setImages((prev) =>
+          prev.map((img) =>
+            img.id === image.id
+              ? {
+                  ...img,
+                  status: "failed",
+                  error: error instanceof Error ? error.message : "업로드에 실패했습니다.",
+                }
+              : img,
+          ),
+        );
+        return null;
+      }
+    },
+    [],
+  );
+
+  const retryOne = useCallback(
+    (id: string) => {
+      const target = imagesRef.current.find((img) => img.id === id);
+      if (target) void uploadOne(target);
+    },
+    [uploadOne],
+  );
+
   const canSubmit = images.length > 0 && !isSubmitting && !!user;
   const outOfRecommendedRange =
     images.length > 0 && (images.length < RECOMMENDED_MIN || images.length > RECOMMENDED_MAX);
@@ -219,31 +303,46 @@ export default function SongsUploadPage() {
   const handleSubmit = useCallback(async () => {
     if (images.length === 0 || !user) return;
     setIsSubmitting(true);
-    setUploadProgress(0);
     setSubmitError(null);
 
-    try {
-      // 실제 R2 presigned PUT 업로드는 Task 015에서 구현된다. 여기서는 진행률 UI만 흉내낸다.
-      await new Promise<void>((resolve) => {
-        const start = Date.now();
-        const durationMs = 900;
-        const interval = setInterval(() => {
-          const pct = Math.min(100, Math.round(((Date.now() - start) / durationMs) * 100));
-          setUploadProgress(pct);
-          if (pct >= 100) {
-            clearInterval(interval);
-            resolve();
-          }
-        }, 80);
-      });
+    // 순서는 지금 이 시점의 images 배열(드래그로 재정렬된 최신 순서)을 그대로 따른다. 이미
+    // 성공한(uploaded) 이미지는 다시 올리지 않고, idle/failed만 업로드하거나 재시도한다.
+    const currentImages = images;
+    const alreadyUploaded = new Map(
+      currentImages
+        .filter((img) => img.status === "uploaded" && img.objectKey)
+        .map((img) => [img.id, img.objectKey!]),
+    );
+    const pending = currentImages.filter((img) => !alreadyUploaded.has(img.id));
+    const results = await Promise.all(pending.map((img) => uploadOne(img)));
+    for (const result of results) if (result) alreadyUploaded.set(result.id, result.objectKey);
 
-      const song = await songRepository.create({ title: "새 악보", createdBy: user.id });
-      router.push(`${routes.songExtracting(song.id)}?count=${images.length}`);
+    if (alreadyUploaded.size !== currentImages.length) {
+      setSubmitError("일부 이미지 업로드에 실패했습니다. 실패한 이미지를 재시도해주세요.");
+      setIsSubmitting(false);
+      return;
+    }
+
+    try {
+      const song = await songRepository.createWithImages({
+        title: "새 악보",
+        images: currentImages.map((img, index) => ({
+          objectKey: alreadyUploaded.get(img.id)!,
+          orderIndex: index,
+        })),
+      });
+      router.push(`${routes.songExtracting(song.id)}?count=${currentImages.length}`);
     } catch {
-      setSubmitError("업로드를 시작하지 못했습니다. 다시 시도해주세요.");
+      // 곡 생성이 실패하면 방금 올린 객체들이 고아로 남는다 — 정리하고, 사용자가 다시 제출
+      // 버튼을 누르면 처음부터 깨끗하게 재업로드하도록 상태를 되돌린다.
+      await Promise.all([...alreadyUploaded.values()].map((key) => deleteUploadedImage(key)));
+      setImages((prev) =>
+        prev.map((img) => ({ ...img, status: "idle", objectKey: undefined, progress: 0 })),
+      );
+      setSubmitError("곡 생성에 실패했습니다. 다시 시도해주세요.");
       setIsSubmitting(false);
     }
-  }, [images.length, router, user]);
+  }, [images, router, user, uploadOne]);
 
   return (
     <div className="flex flex-1 flex-col gap-6 p-6">
@@ -321,6 +420,7 @@ export default function SongsUploadPage() {
                     image={image}
                     index={index}
                     onRemove={removeImage}
+                    onRetry={retryOne}
                   />
                 ))}
               </div>
@@ -329,17 +429,10 @@ export default function SongsUploadPage() {
         </div>
       )}
 
-      {isSubmitting && (
-        <div className="flex max-w-sm flex-col gap-2">
-          <p className="text-sm text-muted-foreground">업로드 중... {uploadProgress}%</p>
-          <Progress value={uploadProgress} />
-        </div>
-      )}
-
       {submitError && <p className="text-sm text-destructive">{submitError}</p>}
 
       <Button onClick={handleSubmit} disabled={!canSubmit} className="w-fit">
-        업로드 및 추출 시작
+        {isSubmitting ? "업로드 중..." : "업로드 및 추출 시작"}
       </Button>
     </div>
   );
