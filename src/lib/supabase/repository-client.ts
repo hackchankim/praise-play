@@ -27,14 +27,27 @@ declare global {
   }
 }
 
+/**
+ * window.Clerk 자체가 아직 정의되지 않은 순간(외부 스크립트가 아직 실행 전)을 기다린다.
+ * 하이드레이션 직후 실행되는 첫 effect는 이 스크립트 실행보다 먼저 도달할 수 있어, window.Clerk
+ * 존재 여부를 확인하지 않고 곧장 .load()를 옵셔널 체이닝으로 호출하면(예전 버전의 실수) 그냥
+ * 조용히 스킵되어 토큰이 null로 빠진다 — 재현 확인: 재생 화면 첫 진입 시 이 레이스로 401이
+ * 발생했다. 폴링 외에 Clerk가 "스크립트 실행 자체"를 기다리는 공식 API를 제공하지 않는다.
+ */
+async function waitForClerkGlobal(timeoutMs = 5000): Promise<Window["Clerk"]> {
+  const start = Date.now();
+  while (!window.Clerk && Date.now() - start < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return window.Clerk;
+}
+
 async function getClerkAccessToken(): Promise<string | null> {
   if (typeof window !== "undefined") {
-    // window.Clerk는 ClerkProvider가 별도 스크립트로 비동기 로드하므로, 하이드레이션 직후
-    // 실행되는 effect가 이보다 먼저 도달하면 아직 undefined일 수 있다. load()는 이미 로드된
-    // 뒤에 호출해도 즉시 반환하는 멱등 함수라, 매번 await해도 안전하다 — 이걸 생략하면 그
-    // 레이스에서 토큰이 null로 빠져 anon 권한(지금은 전부 거부)으로 조용히 요청이 나간다.
-    await window.Clerk?.load();
-    return (await window.Clerk?.session?.getToken()) ?? null;
+    const clerk = await waitForClerkGlobal();
+    // load()는 이미 로드된 뒤에 호출해도 즉시 반환하는 멱등 함수라, 매번 await해도 안전하다.
+    await clerk?.load();
+    return (await clerk?.session?.getToken()) ?? null;
   }
   const { auth } = await import("@clerk/nextjs/server");
   return (await auth()).getToken();
