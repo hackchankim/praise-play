@@ -26,3 +26,23 @@ export function apiError(
 ): NextResponse<ApiErrorBody> {
   return NextResponse.json({ error: { code, message } }, { status });
 }
+
+/**
+ * requireUserId()를 호출하고 UnauthorizedError를 401 응답으로 바로 변환한다. 각 Route
+ * Handler가 이 try/catch를 매번 다시 쓰지 않도록 묶은 편의 함수 — 사용법:
+ *   const authResult = await authenticate();
+ *   if (authResult.response) return authResult.response;
+ *   const { userId } = authResult;
+ */
+export async function authenticate(): Promise<
+  | { userId: string; response?: undefined }
+  | { userId?: undefined; response: NextResponse<ApiErrorBody> }
+> {
+  try {
+    return { userId: await requireUserId() };
+  } catch (error) {
+    if (error instanceof UnauthorizedError)
+      return { response: apiError("UNAUTHORIZED", error.message, 401) };
+    throw error;
+  }
+}

@@ -7,7 +7,7 @@
 import { DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { z } from "zod";
 import type { DeleteUploadRequest } from "@/lib/api/contracts";
-import { apiError, requireUserId, UnauthorizedError } from "@/lib/auth/route-guard";
+import { apiError, authenticate } from "@/lib/auth/route-guard";
 import { createR2Client } from "@/lib/r2/client";
 import { env } from "@/lib/env";
 
@@ -16,13 +16,9 @@ const requestSchema = z.object({
 }) satisfies z.ZodType<DeleteUploadRequest>;
 
 export async function POST(request: Request) {
-  let userId: string;
-  try {
-    userId = await requireUserId();
-  } catch (error) {
-    if (error instanceof UnauthorizedError) return apiError("UNAUTHORIZED", error.message, 401);
-    throw error;
-  }
+  const auth = await authenticate();
+  if (auth.response) return auth.response;
+  const { userId } = auth;
 
   const body = await request.json().catch(() => null);
   const parsed = requestSchema.safeParse(body);

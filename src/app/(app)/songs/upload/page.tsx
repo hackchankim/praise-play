@@ -68,11 +68,16 @@ function validateFiles(files: File[]): { accepted: File[]; errors: string[] } {
 function SortableThumbnail({
   image,
   index,
+  disabled,
   onRemove,
   onRetry,
 }: {
   image: UploadImage;
   index: number;
+  /** 전체 제출이 진행 중일 때 true — 그 사이 목록이 바뀌면 handleSubmit이 스냅샷해둔
+   *  이미지 배열과 어긋나 이미 지운 이미지가 곡에 딸려 들어가거나, 막 지운 R2 객체를
+   *  다시 참조하게 될 수 있다. 제거/재시도 버튼을 잠가 그 창을 원천 차단한다. */
+  disabled: boolean;
   onRemove: (id: string) => void;
   onRetry: (id: string) => void;
 }) {
@@ -80,6 +85,9 @@ function SortableThumbnail({
     id: image.id,
   });
   const style = { transform: CSS.Transform.toString(transform), transition };
+  // 이 이미지 자체가 업로드 중이면(단독 재시도든, 전체 제출의 일부든) 지금 지우면 objectKey를
+  // 어디에도 기록하지 못한 채 R2에 고아 객체가 남는다 — 그 이미지만이라도 항상 잠근다.
+  const removeDisabled = disabled || image.status === "uploading";
 
   return (
     <div
@@ -107,7 +115,8 @@ function SortableThumbnail({
         <button
           type="button"
           onClick={() => onRemove(image.id)}
-          className="flex size-8 items-center justify-center rounded text-white hover:bg-white/20"
+          disabled={removeDisabled}
+          className="flex size-8 items-center justify-center rounded text-white hover:bg-white/20 disabled:pointer-events-none disabled:opacity-40"
           aria-label="이미지 제거"
         >
           <X className="size-4" />
@@ -129,7 +138,8 @@ function SortableThumbnail({
           <button
             type="button"
             onClick={() => onRetry(image.id)}
-            className="flex items-center gap-1 rounded-full bg-white/15 px-2.5 py-1 text-xs text-white hover:bg-white/25"
+            disabled={disabled}
+            className="flex items-center gap-1 rounded-full bg-white/15 px-2.5 py-1 text-xs text-white hover:bg-white/25 disabled:pointer-events-none disabled:opacity-40"
           >
             <RotateCw className="size-3" />
             재시도
@@ -248,9 +258,16 @@ export default function SongsUploadPage() {
     [openFilePicker],
   );
 
+  // 단독 재시도 버튼 클릭과 전체 제출의 자동 재시도가 같은 이미지를 동시에 두 번 업로드하는
+  // 걸 막는다 — 두 경로 모두 uploadOne을 호출하는데, 상태 갱신이 반영되기 전 짧은 시간에
+  // 둘 다 시작되면 R2 객체가 중복으로 남고 어느 objectKey가 최종 채택될지 예측할 수 없다.
+  const inFlightRef = useRef<Set<string>>(new Set());
+
   /** 이미지 하나를 업로드하고, 이번 호출로 얻은 결과({id, objectKey})를 반환한다(실패 시 null). */
   const uploadOne = useCallback(
     async (image: UploadImage): Promise<{ id: string; objectKey: string } | null> => {
+      if (inFlightRef.current.has(image.id)) return null;
+      inFlightRef.current.add(image.id);
       setImages((prev) =>
         prev.map((img) =>
           img.id === image.id
@@ -283,6 +300,8 @@ export default function SongsUploadPage() {
           ),
         );
         return null;
+      } finally {
+        inFlightRef.current.delete(image.id);
       }
     },
     [],
@@ -419,6 +438,7 @@ export default function SongsUploadPage() {
                     key={image.id}
                     image={image}
                     index={index}
+                    disabled={isSubmitting}
                     onRemove={removeImage}
                     onRetry={retryOne}
                   />
