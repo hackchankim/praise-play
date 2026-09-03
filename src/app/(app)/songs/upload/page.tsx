@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils";
 import { routes } from "@/lib/routes";
 import { songRepository } from "@/lib/repositories/song-repository";
 import { deleteUploadedImage, uploadImage } from "@/lib/uploads/upload-image";
+import { triggerExtraction } from "@/lib/extraction/trigger-extraction";
 
 const RECOMMENDED_MIN = 4;
 const RECOMMENDED_MAX = 5;
@@ -342,6 +343,7 @@ export default function SongsUploadPage() {
       return;
     }
 
+    let songId: string;
     try {
       const song = await songRepository.createWithImages({
         title: "새 악보",
@@ -350,7 +352,7 @@ export default function SongsUploadPage() {
           orderIndex: index,
         })),
       });
-      router.push(`${routes.songExtracting(song.id)}?count=${currentImages.length}`);
+      songId = song.id;
     } catch {
       // 곡 생성이 실패하면 방금 올린 객체들이 고아로 남는다 — 정리하고, 사용자가 다시 제출
       // 버튼을 누르면 처음부터 깨끗하게 재업로드하도록 상태를 되돌린다.
@@ -360,7 +362,20 @@ export default function SongsUploadPage() {
       );
       setSubmitError("곡 생성에 실패했습니다. 다시 시도해주세요.");
       setIsSubmitting(false);
+      return;
     }
+
+    try {
+      await triggerExtraction(songId);
+    } catch {
+      // 곡·이미지는 이미 만들어졌으니(정리하지 않고 그대로 둔다) 추출 시작만 재시도하면 되는데,
+      // 지금 이 페이지엔 이 songId에 대한 재시도 진입점이 없다 — 새로 업로드를 시작하게 안내한다.
+      setSubmitError("추출 시작에 실패했습니다. 다시 시도해주세요.");
+      setIsSubmitting(false);
+      return;
+    }
+
+    router.push(routes.songExtracting(songId));
   }, [images, router, user, uploadOne]);
 
   return (

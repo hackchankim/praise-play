@@ -54,6 +54,11 @@ export interface CreateSongWithImagesResponse {
   song: Song;
 }
 
+// ===== 추출 (Task 016) =====
+// POST /api/songs/[songId]/extract는 요청/응답 바디가 없다(202 No Content) — 트리거 신호일
+// 뿐이라 별도 타입을 두지 않는다. 진행 상태는 REST가 아니라 extraction_jobs 테이블을 Supabase
+// Realtime으로 구독해 받는다 (src/lib/song-model/extraction-job.ts의 ExtractionJobRow).
+
 // ===== 곡 목록/상세 (Task 018, 020) =====
 
 export interface ListSongsResponse {
