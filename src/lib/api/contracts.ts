@@ -10,6 +10,7 @@ import type {
   SetlistItem,
   SetlistWithItems,
   Song,
+  SongImage,
   SongTree,
 } from "@/lib/song-model/types";
 
@@ -29,12 +30,28 @@ export interface ApiErrorBody {
 export interface PresignUploadRequest {
   fileName: string;
   contentType: string;
+  /** 클라이언트가 리사이즈까지 마친 뒤의 최종 업로드 예정 크기(바이트). 서버가 상한을 검증한다 */
+  fileSize: number;
 }
 
 export interface PresignUploadResponse {
   uploadUrl: string;
   objectKey: string;
   expiresAt: string;
+}
+
+/** 업로드했지만 최종적으로 songs 레코드와 연결되지 않은 R2 객체를 정리할 때 사용 */
+export interface DeleteUploadRequest {
+  objectKey: string;
+}
+
+export interface CreateSongWithImagesRequest {
+  title: string;
+  images: Array<Pick<SongImage, "objectKey" | "orderIndex">>;
+}
+
+export interface CreateSongWithImagesResponse {
+  song: Song;
 }
 
 // ===== 곡 목록/상세 (Task 018, 020) =====

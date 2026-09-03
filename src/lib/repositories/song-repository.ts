@@ -14,12 +14,14 @@ import type {
   SectionType,
   SectionWithLines,
   Song,
+  SongImage,
   SongStatus,
   SongTree,
 } from "@/lib/song-model/types";
 import { createId } from "@/lib/repositories/mock-utils";
 import { NotFoundError, OptimisticLockError, ValidationError } from "@/lib/repositories/errors";
 import { supabaseRepositoryClient } from "@/lib/supabase/repository-client";
+import { env } from "@/lib/env";
 
 // ===== DB row ↔ 도메인 타입 매핑 =====
 // DB 컬럼은 snake_case, 도메인 타입은 camelCase (src/lib/song-model/types.ts 상단 주석 참고).
@@ -61,6 +63,13 @@ interface SectionRow {
   start_beat: number;
   length_beats: number;
   repeat_target_section_id: string | null;
+}
+
+interface SongImageRow {
+  id: string;
+  song_id: string;
+  object_key: string;
+  order_index: number;
 }
 
 function mapSong(row: SongRow): Song {
@@ -118,6 +127,7 @@ function mapSection(
 
 type SongTreeRow = SongRow & {
   sections: (SectionRow & { lines: (LineRow & { chord_events: ChordEventRow[] })[] })[];
+  song_images: SongImageRow[];
 };
 
 function mapSongTree(row: SongTreeRow): SongTree {
@@ -127,12 +137,11 @@ function mapSongTree(row: SongTreeRow): SongTree {
   };
 }
 
-/**
- * 원본 악보 이미지의 서명 URL을 생성한다. SongImage 엔티티/R2 서명 로직은 Task 015 소관이라
- * 여기서는 GetSongTreeResponse.imageUrls 계약 형태만 맞춘 플레이스홀더를 반환한다.
- */
-function buildPlaceholderImageUrls(songId: string): string[] {
-  return [1, 2].map((page) => `https://picsum.photos/seed/${songId}-${page}/900/1200`);
+/** R2 버킷은 공개 읽기라(Task 013) 서명 없이 base URL + object_key로 바로 접근 가능하다. */
+function buildImageUrls(images: SongImageRow[]): string[] {
+  return [...images]
+    .sort((a, b) => a.order_index - b.order_index)
+    .map((image) => `${env.NEXT_PUBLIC_R2_PUBLIC_URL}/${image.object_key}`);
 }
 
 export interface ListSongsParams {
@@ -140,9 +149,10 @@ export interface ListSongsParams {
   limit?: number;
 }
 
-export interface CreateSongInput {
+export interface CreateSongWithImagesInput {
   title: string;
-  createdBy: string;
+  /** R2에 이미 업로드된 객체 키. 순서대로 song_images에 등록된다 */
+  images: Array<Pick<SongImage, "objectKey" | "orderIndex">>;
 }
 
 export interface SongRepository {
@@ -150,8 +160,11 @@ export interface SongRepository {
   list(params?: ListSongsParams): Promise<ListSongsResponse>;
   /** 곡 전체 트리 조회. 존재하지 않으면 null — 라우트 핸들러가 이를 404로 변환한다 */
   getTree(songId: string): Promise<GetSongTreeResponse | null>;
-  /** 업로드 시작 시 draft 상태의 곡 레코드를 생성한다 */
-  create(input: CreateSongInput): Promise<Song>;
+  /**
+   * 업로드 완료 시 draft 상태의 곡 레코드와 이미지 등록을 함께 만든다(트랜잭션, Task 015).
+   * 소유자는 서버가 현재 로그인 사용자로 강제한다 — 클라이언트가 createdBy를 지정할 수 없다.
+   */
+  createWithImages(input: CreateSongWithImagesInput): Promise<Song>;
   /**
    * 교정 저장(PATCH /api/songs/[songId]/correction 계약과 대응). 섹션/줄/코드를 통째로 upsert하며
    * 요청에 포함되지 않은 기존 항목은 삭제로 반영된다. updatedAt이 일치하지 않으면 낙관적 잠금 충돌.
@@ -176,34 +189,36 @@ export class SupabaseSongRepository implements SongRepository {
   }
 
   async getTree(songId: string): Promise<GetSongTreeResponse | null> {
-    // sections/lines/chord_events를 한 번의 PostgREST 요청(resource embedding)으로 함께 읽는다 —
-    // 곡 전체 트리를 1회 왕복으로 읽어야 한다는 완료 기준을 만족시키는 지점.
+    // sections/lines/chord_events/song_images를 한 번의 PostgREST 요청(resource embedding)으로
+    // 함께 읽는다 — 곡 전체 트리를 1회 왕복으로 읽어야 한다는 완료 기준을 만족시키는 지점.
     const { data, error } = await supabaseRepositoryClient
       .from("songs")
-      .select("*, sections(*, lines(*, chord_events(*)))")
+      .select("*, sections(*, lines(*, chord_events(*))), song_images(*)")
       .eq("id", songId)
       .maybeSingle<SongTreeRow>();
     if (error) throw new Error(`곡 트리 조회 실패: ${error.message}`);
     if (!data) return null;
-    return { song: mapSongTree(data), imageUrls: buildPlaceholderImageUrls(data.id) };
+    return { song: mapSongTree(data), imageUrls: buildImageUrls(data.song_images) };
   }
 
-  async create(input: CreateSongInput): Promise<Song> {
-    const { data, error } = await supabaseRepositoryClient
-      .from("songs")
-      .insert({
-        id: createId("song"),
-        title: input.title,
-        // 추출 전 잠정값. 실제 값은 Task016 추출 파이프라인과 Task009 교정 페이지에서 확정된다.
-        key: "C",
-        tempo: 100,
-        time_signature: "4/4",
-        status: "draft",
-        created_by: input.createdBy,
-      })
-      .select()
-      .single<SongRow>();
+  async createWithImages(input: CreateSongWithImagesInput): Promise<Song> {
+    const songId = createId("song");
+    // songs insert와 song_images insert를 하나의 함수 호출(=하나의 트랜잭션)로 묶는다 —
+    // create_arrangement_with_tracks와 동일한 이유(부분 반영 노출 방지). 소유자(created_by)는
+    // 클라이언트 입력이 아니라 RPC 안에서 auth.jwt()의 현재 로그인 사용자로 고정된다.
+    const { error } = await supabaseRepositoryClient.rpc("create_song_with_images", {
+      p_song_id: songId,
+      p_title: input.title,
+      p_images: input.images,
+    });
     if (error) throw new Error(`곡 생성 실패: ${error.message}`);
+
+    const { data, error: fetchError } = await supabaseRepositoryClient
+      .from("songs")
+      .select()
+      .eq("id", songId)
+      .single<SongRow>();
+    if (fetchError) throw new Error(`곡 생성 직후 재조회 실패: ${fetchError.message}`);
     return mapSong(data);
   }
 

@@ -21,7 +21,6 @@ export const env = createEnv({
     R2_ACCESS_KEY_ID: z.string().min(1),
     R2_SECRET_ACCESS_KEY: z.string().min(1),
     R2_BUCKET_NAME: z.string().min(1),
-    R2_PUBLIC_URL: z.string().url(),
 
     ANTHROPIC_API_KEY: z.string().min(1),
 
@@ -32,6 +31,10 @@ export const env = createEnv({
     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: z.string().min(1),
     NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
     NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1),
+    // 공개 읽기 버킷의 base URL이라(Task013에서 이미 공개 접근으로 세팅) 서버 전용일 이유가
+    // 없다 — 곡 트리를 조회하는 클라이언트 컴포넌트(song-repository.ts)가 이미지 URL을
+    // 조립하려면 이 값이 브라우저에도 있어야 한다.
+    NEXT_PUBLIC_R2_PUBLIC_URL: z.string().url(),
   },
   runtimeEnv: {
     CLERK_SECRET_KEY: process.env.CLERK_SECRET_KEY,
@@ -42,7 +45,6 @@ export const env = createEnv({
     R2_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID,
     R2_SECRET_ACCESS_KEY: process.env.R2_SECRET_ACCESS_KEY,
     R2_BUCKET_NAME: process.env.R2_BUCKET_NAME,
-    R2_PUBLIC_URL: process.env.R2_PUBLIC_URL,
 
     ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
 
@@ -52,6 +54,7 @@ export const env = createEnv({
     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY,
     NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
     NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+    NEXT_PUBLIC_R2_PUBLIC_URL: process.env.NEXT_PUBLIC_R2_PUBLIC_URL,
   },
 });
 
