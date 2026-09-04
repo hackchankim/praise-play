@@ -8,13 +8,19 @@
 // (사운드폰트 다운로드 포함)은 이 클래스 생성자가 아니라 activate()에서 일어나고, activate()는
 // 반드시 클릭 핸들러 등 사용자 제스처 콜백 "안에서" 호출해야 한다(테스트 체크리스트 "사용자
 // 제스처 없이 재생 시도 시 활성화 안내가 표시되는가").
-import { DrumMachine, Sequencer, Soundfont, SplendidGrandPiano } from "smplr";
+import { Sequencer } from "smplr";
 import type { PatternInput, Sequencer as SequencerInstance, SequencerNote } from "smplr";
 import type { Instrument, InstrumentTrack, NoteEvent } from "@/lib/song-model/types";
 import { INSTRUMENTS } from "@/lib/song-model/types";
 import { beatsPerBar } from "@/lib/song-model/time-signature";
 import { beatsToTicks, positionStringToBeats } from "@/lib/playback/beat-time";
 import { toSequencerNotes } from "@/lib/playback/sequencer-notes";
+import {
+  getSharedAudioContext,
+  loadInstrumentsCached,
+  type AssetLoadEvent,
+  type PooledInstrument,
+} from "@/lib/playback/instrument-pool";
 
 export type PlaybackTransportState = "stopped" | "playing" | "paused";
 
@@ -33,23 +39,7 @@ export class AudioActivationError extends Error {
 
 const PPQ = 480;
 
-// Instrument("piano"/"guitar"/"bass"/"drums")마다 어떤 smplr 악기를 쓸지 매핑. 기타/베이스는
-// smplr에 전용 샘플 악기가 없어(SplendidGrandPiano/DrumMachine만 전용) General MIDI
-// Soundfont의 표준 악기 이름을 쓴다 — 실제 이름은 node_modules/smplr 번들에서 확인했다.
-function createInstrument(instrument: Instrument, context: AudioContext) {
-  switch (instrument) {
-    case "piano":
-      return SplendidGrandPiano(context);
-    case "guitar":
-      return Soundfont(context, { instrument: "acoustic_guitar_steel" });
-    case "bass":
-      return Soundfont(context, { instrument: "electric_bass_finger" });
-    case "drums":
-      return DrumMachine(context, { instrument: "TR-808" });
-  }
-}
-
-type SmplrInstrumentInstance = ReturnType<typeof createInstrument>;
+type SmplrInstrumentInstance = PooledInstrument;
 
 /**
  * arrangement/instruments.ts는 킷과 무관한 범용 드럼 별칭을 쓰고("실제 로드되는 킷에 따라
@@ -93,6 +83,13 @@ export interface PlaybackEngineOptions {
    * 021)는 필요한 악기만 받으면 되니 기본값 false.
    */
   preloadAllInstruments?: boolean;
+  /**
+   * activate()가 요청한 악기들을 로딩하는 동안 진행 상황을 그대로 전달한다(Task 024) —
+   * instrument-pool.ts의 AssetLoadEvent를 가공 없이 넘긴다. 사전 로딩 화면이 악기별
+   * 진행률/성공/실패를 보여주는 데 쓴다. 세션 캐시에 이미 있는 악기는 네트워크 요청 없이
+   * 즉시 "done"으로 한 번만 온다.
+   */
+  onLoadProgress?: (event: AssetLoadEvent) => void;
 }
 
 const POSITION_POLL_MS = 100;
@@ -126,6 +123,14 @@ export class PlaybackEngine {
   /** loadQueue()로 로드한 곡별 템포/박자 — patternChange 핸들러가 곡 경계에서 참조한다. */
   private queueMeta: Array<{ tempo: number; beatsPerBar: number }> = [];
   /**
+   * 가장 최근 activate() 시도에서 로딩에 실패한 악기 목록(Task 024). 부분 실패해도 activate()
+   * 자체는 throw하지 않고 성공한 악기만으로 Sequencer를 구성한다 — 실패한 악기를 쓰는 트랙은
+   * addTracksToSequencer/buildTrackInputs가 이미 "instrument가 없으면 건너뛴다"로 조용히
+   * 무음 처리하므로(기존 로직 그대로), 호출부는 이 목록을 읽어 "일부 악기 없이 진행" 안내만
+   * 보여주면 된다.
+   */
+  private failedInstruments: Instrument[] = [];
+  /**
    * dispose()가 activate() 진행 중(사운드폰트 로딩 대기 등) 호출되면, 뒤늦게 이어지는 activate()의
    * 나머지 코드가 이미 정리된 필드를 다시 채워 dispose 이후에도 "활성화된" 것처럼 되살아나고
    * 방금 만든 인스턴스들은 영영 dispose되지 않는다(code review 지적, 실제 코드 확인으로 재현
@@ -148,6 +153,42 @@ export class PlaybackEngine {
     return this.sequencer !== null;
   }
 
+  /** 가장 최근 activate()에서 로딩에 실패한 악기 목록. 비어 있으면 전부 성공한 것이다. */
+  get loadFailures(): readonly Instrument[] {
+    return this.failedInstruments;
+  }
+
+  /**
+   * 이미 activate()된 뒤 이전에 실패했던 악기만 다시 로딩한다(Task 024, "재시도" 버튼).
+   * activate() 자체를 다시 부르면 안 되는 이유: activate()의 "이미 활성화됐으면(this.context &&
+   * this.sequencer) resume만 하고 재구성하지 않는다"는 가드가 부분 실패 뒤에도 그대로 걸린다
+   * — 부분 실패해도 Sequencer는 이미 구성돼 있어(loadFailures 참고) isActivated가 true이므로,
+   * 그 가드가 실패한 악기를 다시 시도할 기회 자체를 막아버린다(실측 재현: Playwright로 드럼
+   * 로딩만 네트워크 차단 → "재시도" 클릭 → 차단을 풀어도 계속 실패 화면에 멈춰 있음 — 애초에
+   * 아무 요청도 다시 나가지 않았다). 이 메서드는 그 가드를 우회해 실패했던 악기만 세션 캐시를
+   * 통해 다시 로딩한다.
+   *
+   * 방금 성공한 악기를 쓰는 트랙이 실제로 소리 나려면 호출부가 이어서 loadTracks()나
+   * loadQueue()를 다시 불러야 한다 — activate() 때 이미 "실패한 악기를 쓰는 트랙은 건너뛴다"로
+   * Sequencer를 구성해 둔 상태라, 트랙을 다시 붙이는 로직을 여기서 중복 구현하지 않고 기존
+   * 경로를 그대로 재사용한다.
+   */
+  async retryFailedInstruments(): Promise<void> {
+    if (this.disposed || !this.context || this.failedInstruments.length === 0) return;
+    const targets = [...this.failedInstruments];
+    const { loaded, failed } = await loadInstrumentsCached(targets, this.context, (event) =>
+      this.options.onLoadProgress?.(event),
+    );
+    // activate()가 각 await 지점 이후 disposed를 다시 확인하는 것과 같은 이유다(위 클래스
+    // 필드 주석 참고) — 이 await 도중 dispose()가 먼저 실행됐다면(사용자가 로딩 중 페이지를
+    // 나간 경우 등) 이미 정리된 필드(instruments={}, failedInstruments 등)를 뒤늦게 다시
+    // 채워 넣으면 안 된다(code review 지적, 실제로 dispose 이후 필드가 되살아나는 것과 같은
+    // 버그 클래스임을 확인).
+    if (this.disposed) return;
+    this.instruments = { ...this.instruments, ...loaded };
+    this.failedInstruments = failed;
+  }
+
   /** 트랙 전체(모든 악기)에서 가장 늦게 끝나는 노트 기준 총 길이(beat). 활성화 전에도 계산 가능. */
   get durationBeats(): number {
     const allNotes: NoteEvent[] = this.tracks.flatMap((track) => track.notes);
@@ -155,31 +196,39 @@ export class PlaybackEngine {
   }
 
   /**
-   * 사용자 제스처 콜백 안에서 호출한다. AudioContext 생성(또는 suspended 상태면 resume) →
-   * 트랙에 노트가 있는 악기만 사운드폰트 로딩 → Sequencer 구성까지 한 번에 끝낸다. 이미
-   * 완전히 활성화돼 있으면(this.sequencer가 있으면) resume만 시도하고 재구성하지 않는다
-   * (중복 호출에 안전).
+   * 사용자 제스처 콜백 안에서 호출한다. 세션 공유 AudioContext 확보(또는 suspended 상태면
+   * resume) → 트랙에 노트가 있는 악기만 사운드폰트 로딩(세션 캐시 재사용, instrument-pool.ts
+   * 참고, Task 024) → Sequencer 구성까지 한 번에 끝낸다. 이미 완전히 활성화돼 있으면
+   * (this.sequencer가 있으면) resume만 시도하고 재구성하지 않는다(중복 호출에 안전).
    *
-   * 실패하면(제스처 거부, 네트워크 오류로 사운드폰트 로딩 실패 등) 부분적으로 만든 자원을
-   * 전부 정리하고 AudioActivationError를 던진다 — this.context/this.sequencer를 어중간하게
-   * 채운 채로 남기면, 이 엔진은 이미 "활성화됨"으로 보여 재시도가 조용히 무시되는(아무 소리도
-   * 안 나는데 에러도 없는) 영구 먹통 상태가 된다(code review 지적, 코드 확인으로 재현 가능함을
-   * 검증).
+   * AudioContext 확보/resume 자체가 실패하면(제스처 거부 등) AudioActivationError를 던진다.
+   * 반면 악기 로딩은 개별 실패를 허용한다 — 일부 악기가 실패해도 나머지로 Sequencer를
+   * 구성하고 조용히 진행한다(loadFailures로 어떤 악기가 빠졌는지 호출부가 확인할 수 있다).
+   * 트랙 스케줄링(addTracksToSequencer)은 이미 "instrument가 없으면 그 트랙을 건너뛴다"로
+   * 무음 처리하므로 부분 실패로 크래시하지 않는다 — ROADMAP Task 024 "부분 실패 시 진행 여부
+   * 선택 안내"를 지원하려면 activate() 자체가 전부 실패해버리면 안 됐다.
    */
   async activate(): Promise<void> {
     if (this.disposed) return;
 
     if (this.context && this.sequencer) {
-      if (this.context.state === "suspended") await this.context.resume().catch(() => {});
-      if (this.context.state !== "running") throw new AudioActivationError();
+      // this.context를 지역 변수로 먼저 잡아 둔다 — 아래 await 도중 dispose()가 끼어들면
+      // this.context가 null로 바뀌는데, 그 뒤에도 계속 this.context를 읽으면 의도한
+      // AudioActivationError 대신 캐치되지 않은 TypeError가 던져진다(code review 지적).
+      // 현재는 이 분기에 도달하는 유일한 경로(engine.isActivated가 이미 true)가 없어(모든
+      // 호출부가 activate() 전 isActivated를 확인한다) 실제로 재현되지는 않지만, 이 함수
+      // 나머지 전체가 지키는 "await 이후 disposed 재확인" 불변조건과 맞춰 둔다.
+      const context = this.context;
+      if (context.state === "suspended") await context.resume().catch(() => {});
+      if (this.disposed) return;
+      if (context.state !== "running") throw new AudioActivationError();
       return;
     }
 
-    const context = new AudioContext();
-    const loadedInstruments: SmplrInstrumentInstance[] = [];
+    const context = getSharedAudioContext();
     try {
       if (context.state === "suspended") await context.resume().catch(() => {});
-      if (this.disposed) return this.abandonAndClose(context, loadedInstruments);
+      if (this.disposed) return;
       if (context.state !== "running") throw new AudioActivationError();
 
       const neededInstruments = this.options.preloadAllInstruments
@@ -187,15 +236,10 @@ export class PlaybackEngine {
         : INSTRUMENTS.filter((instrument) =>
             this.tracks.some((track) => track.instrument === instrument && track.notes.length > 0),
           );
-      const loaded = await Promise.all(
-        neededInstruments.map(async (instrument) => {
-          const instance = createInstrument(instrument, context);
-          loadedInstruments.push(instance);
-          await instance.ready;
-          return [instrument, instance] as const;
-        }),
+      const { loaded, failed } = await loadInstrumentsCached(neededInstruments, context, (event) =>
+        this.options.onLoadProgress?.(event),
       );
-      if (this.disposed) return this.abandonAndClose(context, loadedInstruments);
+      if (this.disposed) return;
 
       const sequencer = Sequencer(context, {
         bpm: this.tempoValue,
@@ -203,7 +247,7 @@ export class PlaybackEngine {
         timeSignature: this.beatsPerBarValue,
         loop: false,
       });
-      this.addTracksToSequencer(sequencer, this.tracks, Object.fromEntries(loaded));
+      this.addTracksToSequencer(sequencer, this.tracks, loaded);
       sequencer.on("statechange", (state: PlaybackTransportState) => {
         this.options.onTransportStateChange?.(state);
         if (state === "playing") this.startPositionPolling();
@@ -219,27 +263,18 @@ export class PlaybackEngine {
         this.handlePatternChange(patternIndex);
       });
 
-      if (this.disposed) return this.abandonAndClose(context, loadedInstruments, sequencer);
+      if (this.disposed) {
+        sequencer.stop();
+        return;
+      }
 
       this.context = context;
-      this.instruments = Object.fromEntries(loaded);
+      this.instruments = loaded;
+      this.failedInstruments = failed;
       this.sequencer = sequencer;
     } catch (error) {
-      for (const instance of loadedInstruments) instance.dispose();
-      await context.close().catch(() => {});
       throw error instanceof AudioActivationError ? error : new AudioActivationError(error);
     }
-  }
-
-  /** activate() 도중 dispose()가 먼저 실행된 경우, 방금 로드한 것들을 되살리지 않고 정리한다. */
-  private abandonAndClose(
-    context: AudioContext,
-    instruments: SmplrInstrumentInstance[],
-    sequencer?: SequencerInstance,
-  ): void {
-    sequencer?.stop();
-    for (const instance of instruments) instance.dispose();
-    void context.close();
   }
 
   /**
@@ -482,18 +517,22 @@ export class PlaybackEngine {
   }
 
   /**
-   * 컴포넌트 언마운트 시 반드시 호출 — AudioContext를 닫지 않으면 브라우저 오디오 리소스가
-   * 샌다. disposed 플래그를 세워 두면 activate()가 아직 진행 중이었더라도(사운드폰트 로딩
-   * 대기 등) 뒤늦게 이어지는 코드가 이 상태를 되살리지 않고 스스로 정리한다.
+   * 컴포넌트 언마운트 시 반드시 호출 — 이 엔진 인스턴스의 Sequencer를 멈추고 참조를 정리한다.
+   * disposed 플래그를 세워 두면 activate()가 아직 진행 중이었더라도(사운드폰트 로딩 대기 등)
+   * 뒤늦게 이어지는 코드가 이 상태를 되살리지 않고 스스로 정리한다.
+   *
+   * AudioContext와 로드된 악기 인스턴스는 여기서 닫거나 dispose하지 않는다 — 세션 전체에서
+   * 공유되는 풀 소유이기 때문이다(instrument-pool.ts, Task 024). 예전(Task 021~023)에는 이
+   * 엔진이 직접 만든 전용 자원이라 여기서 닫는 게 맞았지만, 이제 닫아버리면 같은 세션 안의
+   * 다른 화면(다른 세트리스트 재생, 미리듣기 등)이 처음부터 다시 다운로드해야 한다 — 이
+   * 엔진이 들고 있던 "참조"만 버린다.
    */
   dispose(): void {
     this.disposed = true;
     this.stopPositionPolling();
     this.sequencer?.stop();
-    for (const instrument of Object.values(this.instruments)) instrument?.dispose();
     this.instruments = {};
     this.sequencer = null;
-    void this.context?.close();
     this.context = null;
   }
 }

@@ -1,16 +1,21 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { Check, Drum, Guitar, Loader2, Music2, Piano, Play, Waves } from "lucide-react";
+import {
+  Check,
+  Drum,
+  Guitar,
+  Loader2,
+  Music2,
+  Piano,
+  Play,
+  TriangleAlert,
+  Waves,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { INSTRUMENT_LABEL } from "@/lib/song-model/labels";
 import type { Instrument } from "@/lib/song-model/types";
-import {
-  runPreloadSimulator,
-  type PreloadAsset,
-  type PreloadAssetStatus,
-} from "@/lib/repositories/preload-progress";
+import type { ActivationStatus, AssetLoadStatus } from "./use-live-playback";
 
 const INSTRUMENT_ICON: Record<Instrument, typeof Piano> = {
   piano: Piano,
@@ -19,58 +24,92 @@ const INSTRUMENT_ICON: Record<Instrument, typeof Piano> = {
   drums: Drum,
 };
 
+const ALL_INSTRUMENTS: Instrument[] = ["piano", "guitar", "bass", "drums"];
+
 interface PreloadingScreenProps {
   songTitles: string[];
   /**
-   * 준비가 끝나면(로딩 시뮬레이션 완료) 자동으로 넘어가지 않고 "예배 시작" 버튼을 보여준다 —
-   * 실제 오디오(smplr AudioContext)는 브라우저 정책상 사용자 제스처 없이 활성화할 수 없어서다
-   * (Task 022). 버튼 클릭이 그 제스처이자 onStart 호출 시점이다. activate() 실패 시 재시도
-   * 안내는 여기가 아니라 playback-screen.tsx가 보여준다 — onStart 호출과 동시에 phase가
-   * "playing"으로 넘어가 이 화면은 곧바로 언마운트되므로, activate()가 실패하는 시점엔 이미
-   * 이 컴포넌트가 화면에 없어 여기서 실패 상태를 받아도 보여줄 수가 없다(code review 지적 —
-   * 이전엔 activationFailed prop이 있었지만 절대 true로 관측되지 않는 죽은 코드였다).
+   * 악기별 실제 로딩 진행 상황(Task 024) — engine.ts의 onLoadProgress를 그대로 반영한
+   * use-live-playback.ts의 state다. 편곡 트랙(songTitles가 나타내는 곡별 데이터)은 이 화면에
+   * 도달하기 전(play-view.tsx의 "loading" 단계)에 이미 다 받아 온 상태라 여기서는 항상
+   * "완료"로 표시한다 — 실제로 지금 로딩 중인 건 사운드폰트뿐이다.
+   */
+  loadProgress: Partial<Record<Instrument, { status: AssetLoadStatus; percent: number }>>;
+  activationStatus: ActivationStatus;
+  /**
+   * "예배 시작"/"재시도" 버튼 클릭(=사용자 제스처) 콜백. 실제 오디오(smplr AudioContext)는
+   * 브라우저 정책상 사용자 제스처 없이 활성화할 수 없어서다 — 이 버튼 클릭이 그 제스처다
+   * (Task 022/024). 로딩이 끝나면(실패한 악기 없이) 호출부(play-view.tsx)가 알아서 재생
+   * 화면으로 넘긴다 — 이 컴포넌트는 넘어갈지 말지를 결정하지 않는다.
    */
   onStart: () => void;
+  /** 일부 악기가 끝내 로딩되지 않았을 때, 그 악기 없이 그대로 재생 화면으로 진행한다. */
+  onProceedAnyway: () => void;
 }
 
-export function PreloadingScreen({ songTitles, onStart }: PreloadingScreenProps) {
-  const assets = useMemo<PreloadAsset[]>(
-    () => [
-      ...(["piano", "guitar", "bass", "drums"] as Instrument[]).map((instrument) => ({
-        id: `soundfont-${instrument}`,
-        label: `${INSTRUMENT_LABEL[instrument]} 사운드폰트`,
-        kind: "soundfont" as const,
-      })),
-      ...songTitles.map((title, index) => ({
-        id: `track-${index}`,
-        label: `${title} 편곡 트랙`,
-        kind: "track" as const,
-      })),
-    ],
-    [songTitles],
+export function PreloadingScreen({
+  songTitles,
+  loadProgress,
+  activationStatus,
+  onStart,
+  onProceedAnyway,
+}: PreloadingScreenProps) {
+  // activationStatus가 한 번이라도 idle이 아니었거나(activating/failed) 진행 이벤트가 하나라도
+  // 왔으면(loadProgress에 항목이 생김) "이미 시작해 봤다"는 뜻이다 — 초기 idle과 "성공적으로
+  // 끝난 뒤의 idle"을 이걸로 구분한다.
+  const hasStarted = activationStatus !== "idle" || Object.keys(loadProgress).length > 0;
+  const failedInstruments = ALL_INSTRUMENTS.filter(
+    (instrument) => loadProgress[instrument]?.status === "failed",
   );
+  const isLoading = activationStatus === "activating";
+  const hasTotalFailure = activationStatus === "failed";
+  const hasPartialFailure =
+    !isLoading && !hasTotalFailure && hasStarted && failedInstruments.length > 0;
 
-  const [progressById, setProgressById] = useState<Record<string, number>>({});
-  const [statusById, setStatusById] = useState<Record<string, PreloadAssetStatus>>({});
-  const [overallProgress, setOverallProgress] = useState(0);
-  const [ready, setReady] = useState(false);
+  const instrumentAssets = ALL_INSTRUMENTS.map((instrument) => ({
+    kind: "soundfont" as const,
+    id: `soundfont-${instrument}`,
+    label: `${INSTRUMENT_LABEL[instrument]} 사운드폰트`,
+    status: loadProgress[instrument]?.status,
+    percent: loadProgress[instrument]?.percent ?? 0,
+  }));
+  // 편곡 트랙은 이 화면에 오기 전에 이미 다 받아 왔다(play-view.tsx의 "loading" 단계) — 여기서
+  // 다시 로딩되는 게 아니라 목록에 "이미 끝난 항목"으로만 보여준다.
+  const trackAssets = songTitles.map((title, index) => ({
+    kind: "track" as const,
+    id: `track-${index}`,
+    label: `${title} 편곡 트랙`,
+    status: "done" as const,
+    percent: 100,
+  }));
+  const assets = [...instrumentAssets, ...trackAssets];
 
-  useEffect(() => {
-    const stop = runPreloadSimulator(assets, (event) => {
-      setProgressById((prev) => ({ ...prev, [event.assetId]: event.progress }));
-      setStatusById((prev) => ({ ...prev, [event.assetId]: event.status }));
-      setOverallProgress(event.overallProgress);
-      if (event.allDone) setReady(true);
-    });
-    return stop;
-  }, [assets]);
+  const totalPercent =
+    assets.length > 0
+      ? Math.round(assets.reduce((sum, asset) => sum + asset.percent, 0) / assets.length)
+      : 0;
 
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-8 p-6">
       <div className="flex flex-col items-center gap-2 text-center">
-        {ready ? (
-          <h1 className="text-xl font-semibold">반주 준비가 끝났어요</h1>
-        ) : (
+        {hasTotalFailure ? (
+          <>
+            <TriangleAlert className="size-8 text-destructive" />
+            <h1 className="text-xl font-semibold">오디오를 활성화하지 못했어요</h1>
+            <p className="text-sm text-muted-foreground">
+              오디오를 활성화하지 못했습니다. 버튼을 다시 눌러주세요.
+            </p>
+          </>
+        ) : hasPartialFailure ? (
+          <>
+            <TriangleAlert className="size-8 text-destructive" />
+            <h1 className="text-xl font-semibold">일부 악기를 불러오지 못했어요</h1>
+            <p className="text-sm text-muted-foreground">
+              {failedInstruments.map((instrument) => INSTRUMENT_LABEL[instrument]).join(", ")}{" "}
+              사운드폰트를 불러오지 못했습니다. 재시도하거나, 그 악기 없이 진행할 수 있습니다.
+            </p>
+          </>
+        ) : isLoading ? (
           <>
             <Loader2 className="size-8 animate-spin text-primary" />
             <h1 className="text-xl font-semibold">반주를 준비하고 있어요</h1>
@@ -78,10 +117,28 @@ export function PreloadingScreen({ songTitles, onStart }: PreloadingScreenProps)
               악기 사운드와 편곡 트랙을 미리 불러오는 중입니다.
             </p>
           </>
+        ) : (
+          <h1 className="text-xl font-semibold">예배를 시작할 준비가 됐어요</h1>
         )}
       </div>
 
-      {ready && (
+      {hasTotalFailure && (
+        <Button size="lg" onClick={onStart} className="gap-2">
+          <Play />
+          다시 시도
+        </Button>
+      )}
+      {hasPartialFailure && (
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <Button size="lg" variant="outline" onClick={onStart}>
+            재시도
+          </Button>
+          <Button size="lg" onClick={onProceedAnyway} className="gap-2">
+            <Play /> 이 악기 없이 진행
+          </Button>
+        </div>
+      )}
+      {!hasStarted && (
         <Button size="lg" onClick={onStart} className="gap-2">
           <Play />
           예배 시작
@@ -89,16 +146,15 @@ export function PreloadingScreen({ songTitles, onStart }: PreloadingScreenProps)
       )}
 
       <div className="w-full max-w-md">
-        <Progress value={overallProgress} />
+        <Progress value={totalPercent} />
         <p className="mt-1 text-right text-xs text-muted-foreground tabular-nums">
-          {overallProgress}%
+          {totalPercent}%
         </p>
       </div>
 
       <div className="flex w-full max-w-md flex-col gap-2">
         {assets.map((asset) => {
-          const status = statusById[asset.id] ?? "pending";
-          const progress = progressById[asset.id] ?? 0;
+          const status = asset.status ?? "loading";
           const Icon =
             asset.kind === "soundfont"
               ? INSTRUMENT_ICON[asset.id.replace("soundfont-", "") as Instrument]
@@ -112,9 +168,11 @@ export function PreloadingScreen({ songTitles, onStart }: PreloadingScreenProps)
               <span className="min-w-0 flex-1 truncate">{asset.label}</span>
               {status === "done" ? (
                 <Check className="size-4 shrink-0 text-primary" />
+              ) : status === "failed" ? (
+                <TriangleAlert className="size-4 shrink-0 text-destructive" />
               ) : (
                 <span className="w-9 shrink-0 text-right text-xs text-muted-foreground tabular-nums">
-                  {status === "loading" ? `${progress}%` : ""}
+                  {hasStarted ? `${asset.percent}%` : ""}
                 </span>
               )}
             </div>
