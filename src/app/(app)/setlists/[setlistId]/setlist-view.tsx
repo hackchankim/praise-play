@@ -26,14 +26,19 @@ import { EmptyState } from "@/components/domain/empty-state";
 import { ErrorState } from "@/components/domain/error-state";
 import { PageHeader } from "@/components/domain/page-header";
 import { routes } from "@/lib/routes";
-import { setlistRepository } from "@/lib/repositories/setlist-repository";
-import { songRepository } from "@/lib/repositories/song-repository";
+import {
+  SetlistForbiddenError,
+  fetchSetlist,
+  renameSetlist,
+  updateSetlistItems,
+} from "@/lib/api/setlists-client";
+import { fetchSongs } from "@/lib/api/songs-client";
 import { arrangementRepository } from "@/lib/repositories/arrangement-repository";
 import type { ArrangementWithTracks, Song } from "@/lib/song-model/types";
 import { SetlistItemRow } from "./setlist-item-row";
 import { AddSongDialog } from "./add-song-dialog";
 
-type LoadStatus = "loading" | "not_found" | "error" | "ready";
+type LoadStatus = "loading" | "not_found" | "forbidden" | "error" | "ready";
 
 interface WorkingItem {
   songId: string;
@@ -69,7 +74,7 @@ export function SetlistView({ setlistId }: SetlistViewProps) {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([setlistRepository.getById(setlistId), songRepository.list()])
+    Promise.all([fetchSetlist(setlistId), fetchSongs()])
       .then(async ([detail, { songs }]) => {
         if (cancelled) return;
         if (!detail) {
@@ -96,8 +101,9 @@ export function SetlistView({ setlistId }: SetlistViewProps) {
         setArrangementOptions(optionsBySong);
         setStatus("ready");
       })
-      .catch(() => {
-        if (!cancelled) setStatus("error");
+      .catch((error) => {
+        if (cancelled) return;
+        setStatus(error instanceof SetlistForbiddenError ? "forbidden" : "error");
       });
     return () => {
       cancelled = true;
@@ -113,7 +119,7 @@ export function SetlistView({ setlistId }: SetlistViewProps) {
 
       persistQueueRef.current = persistQueueRef.current.then(async () => {
         try {
-          await setlistRepository.updateItems(setlistId, {
+          await updateSetlistItems(setlistId, {
             items: next.map((item, index) => ({
               songId: item.songId,
               arrangementId: item.arrangementId,
@@ -171,7 +177,7 @@ export function SetlistView({ setlistId }: SetlistViewProps) {
       return;
     }
     try {
-      const updated = await setlistRepository.updateName(setlistId, { name: trimmed });
+      const { setlist: updated } = await renameSetlist(setlistId, { name: trimmed });
       savedNameRef.current = updated.name;
       setName(updated.name);
     } catch {
@@ -229,6 +235,16 @@ export function SetlistView({ setlistId }: SetlistViewProps) {
       <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
         <p className="text-lg font-semibold">찬양콘티를 찾을 수 없습니다</p>
         <p className="text-sm text-muted-foreground">찬양콘티 ID: {setlistId}</p>
+        <Button onClick={() => router.push(routes.home())}>홈으로 이동</Button>
+      </div>
+    );
+  }
+
+  if (status === "forbidden") {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+        <p className="text-lg font-semibold">이 찬양콘티에 접근할 권한이 없습니다</p>
+        <p className="text-sm text-muted-foreground">다른 사용자가 만든 찬양콘티입니다.</p>
         <Button onClick={() => router.push(routes.home())}>홈으로 이동</Button>
       </div>
     );

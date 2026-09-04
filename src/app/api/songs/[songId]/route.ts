@@ -5,6 +5,7 @@
 import type { GetSongTreeResponse, SaveCorrectionRequest } from "@/lib/api/contracts";
 import { apiError, authenticate } from "@/lib/auth/route-guard";
 import { songRepository } from "@/lib/repositories/song-repository";
+import { NotFoundError } from "@/lib/repositories/errors";
 import { supabaseRepositoryClient } from "@/lib/supabase/repository-client";
 
 interface SongDraftRow {
@@ -42,4 +43,24 @@ export async function GET(_request: Request, context: { params: Promise<{ songId
 
   const response: GetSongTreeResponse = { ...tree, draftCorrection };
   return Response.json(response);
+}
+
+// DELETE /api/songs/[songId] — 곡 삭제 (Task 020).
+// sections/lines/chord_events/arrangements/instrument_tracks/setlist_items는 모두 ON DELETE
+// CASCADE로 연결돼 있어(song-repository.ts delete() 주석 참고) songs 한 행만 지우면 연관 데이터가
+// 전부 함께 정리된다. 이 곡이 들어 있던 세트리스트의 setlist_items도 함께 사라지므로, 세트리스트
+// 항목이 가리키던 곡이 없어졌다는 이유로 별도 정합성 처리를 할 필요가 없다 — 항목 자체가 사라진다.
+export async function DELETE(_request: Request, context: { params: Promise<{ songId: string }> }) {
+  const auth = await authenticate();
+  if (auth.response) return auth.response;
+
+  const { songId } = await context.params;
+
+  try {
+    await songRepository.delete(songId);
+    return new Response(null, { status: 204 });
+  } catch (error) {
+    if (error instanceof NotFoundError) return apiError("NOT_FOUND", error.message, 404);
+    return apiError("INTERNAL_ERROR", "곡 삭제에 실패했습니다.", 500);
+  }
 }

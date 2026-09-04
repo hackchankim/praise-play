@@ -8,7 +8,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import type { VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 import { routes } from "@/lib/routes";
-import { setlistRepository } from "@/lib/repositories/setlist-repository";
+import { createSetlist } from "@/lib/api/setlists-client";
 
 interface NewSetlistButtonProps extends VariantProps<typeof buttonVariants> {
   className?: string;
@@ -31,7 +31,7 @@ export function NewSetlistButton({ className, variant, size, children }: NewSetl
         if (!user) return;
         setPending(true);
         try {
-          const setlist = await setlistRepository.create({ name: "새 찬양콘티" }, user.id);
+          const { setlist } = await createSetlist({ name: "새 찬양콘티" });
           router.push(routes.setlist(setlist.id));
         } catch {
           toast.error("찬양콘티를 만들지 못했습니다. 다시 시도해주세요.");

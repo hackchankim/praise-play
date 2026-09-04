@@ -238,11 +238,21 @@ export function ComponentGallery() {
           {SONG_STATUSES.map((status) => (
             <SongCard
               key={status}
-              song={{ title: "나 무엇과 주 바꾸리", status, key: "G", tempo: 76 }}
+              song={{
+                id: `gallery-song-${status}`,
+                title: "나 무엇과 주 바꾸리",
+                status,
+                key: "G",
+                tempo: 76,
+              }}
               href="#"
             />
           ))}
-          <SetlistCard setlist={{ name: "주일 1부 예배" }} songCount={4} href="#" />
+          <SetlistCard
+            setlist={{ id: "gallery-setlist", name: "주일 1부 예배" }}
+            songCount={4}
+            href="#"
+          />
         </div>
         <Card className="max-w-sm">
           <CardHeader>

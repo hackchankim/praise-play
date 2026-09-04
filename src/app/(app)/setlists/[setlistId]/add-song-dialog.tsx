@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/domain/empty-state";
-import { songRepository } from "@/lib/repositories/song-repository";
+import { fetchSongs } from "@/lib/api/songs-client";
 import type { Song } from "@/lib/song-model/types";
 
 const STATUS_LABEL: Record<Song["status"], string> = {
@@ -42,7 +42,7 @@ export function AddSongDialog({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    songRepository.list().then(({ songs: list }) => {
+    fetchSongs().then(({ songs: list }) => {
       if (!cancelled) setSongs(list);
     });
     return () => {
