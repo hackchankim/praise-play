@@ -370,24 +370,29 @@ CI(Task 029)가 갖춰지기 전까지는 merge 직전 로컬에서 `build`/`tsc
   - [x] Playwright MCP: 교정 페이지 진입 → 코드 이동 → 가사 수정 → 섹션 재라벨 → 키/템포 확정 → 저장 → 편곡 설정 페이지 이동 E2E 검증
   - [x] Playwright MCP: 교정 중 새로고침 후 임시 저장 복원 검증
 
-- **Task 019: Tonal.js 기반 다악기 편곡 엔진 구현 (F006)**
+- **Task 019: Tonal.js 기반 다악기 편곡 엔진 구현 (F006)** ✅
   - 편곡 엔진 코어 작성 (`src/lib/arrangement/generate.ts` — 제품의 핵심 IP)
-  - Tonal.js `Voicing` / `Voice-Leading`으로 코드 기호 → 음정 해석 및 코드 간 성부 연결
+  - Tonal.js `Voicing.sequence` / `VoiceLeading.topNoteDiff`로 코드 기호 → 음정 해석 및 코드 간 성부 연결
   - 장르 프리셋 4종 패턴 라이브러리 구축: `praise_upbeat`, `ccm_ballad`, `hymn_traditional`, `acoustic_intimate`
-  - 악기별 패턴 생성기: 피아노 컴핑, 기타 스트로크/핑거피킹, 베이스 루트-5도, 드럼 그루브
-  - **섹션별 다이나믹스/악기 구성 맵**(예: 1절은 피아노만, 후렴은 풀밴드)으로 체감 품질 향상
+    (`src/lib/arrangement/presets.ts` — Task 008의 프리셋 설명 카피를 그대로 코드로 구현)
+  - 악기별 패턴 생성기(`instruments.ts`): 피아노 컴핑/아르페지오/블록/스파스, 기타 스트로크/핑거피킹/스파스,
+    베이스 워킹/롱톤/다운비트/스파스, 드럼 액티브/미니멀
+  - **섹션별 다이나믹스/악기 구성 맵**(예: ccm_ballad는 절에서 드럼 생략, 후렴부터 합류)으로 체감 품질 향상
   - 출력은 beat 단위 노트 이벤트 JSON — smplr Sequencer에 직접 투입 가능한 형식으로 `instrument_tracks.notes`에 저장
-  - Inngest 잡 `generate-arrangement`로 비동기 실행 및 진행 상태 노출
-  - 편곡 생성 API (`POST /api/songs/[songId]/arrangements`) 및 프리셋 재생성 지원
+  - 편곡 생성 API (`POST /api/songs/[songId]/arrangements`) 및 프리셋 재생성 지원. **Inngest 잡 대신 동기
+    Route Handler로 구현** — 실제 계산이 순수 결정론적 알고리즘(외부 LLM 호출 없음)이라 수백 ms 안에
+    끝나고, Task 008에서 이미 만들어진 편곡 설정 페이지 UI도 처음부터 동기 응답을 전제로 설계돼 있었다
+    (진행률 구독 UI가 없음). 대신 엔진 자체가 클라이언트 번들에 실리지 않도록
+    `src/lib/arrangement/persist-arrangement.ts`에 `server-only` 가드를 둬 핵심 IP를 보호했다.
   - 완료 기준: 4개 장르 프리셋 중 하나를 선택해 생성 요청 시 4악기 노트 이벤트가 beat 정렬된 상태로 저장되고 미리듣기로 확인 가능함
 
   #### 테스트 체크리스트
-  - [ ] 생성된 노트 이벤트의 beat 위치가 `ChordEvent.beat_offset`과 정확히 정렬되는가
-  - [ ] 코드 전환 지점에서 이전 코드 노트가 겹쳐 울리지 않는가
-  - [ ] 4개 프리셋이 서로 구분 가능한 패턴을 생성하는가
-  - [ ] 파싱 불가 코드가 포함된 곡에서 엔진이 크래시 없이 스킵·대체 처리하는가
-  - [ ] 섹션별 악기 구성 맵이 실제 트랙에 반영되는가
-  - [ ] Playwright MCP: 편곡 설정 페이지에서 프리셋 선택 → 생성 요청 → 완료 후 4개 악기 트랙 표시 E2E 검증
+  - [x] 생성된 노트 이벤트의 beat 위치가 `ChordEvent.beat_offset`과 정확히 정렬되는가
+  - [x] 코드 전환 지점에서 이전 코드 노트가 겹쳐 울리지 않는가
+  - [x] 4개 프리셋이 서로 구분 가능한 패턴을 생성하는가
+  - [x] 파싱 불가 코드가 포함된 곡에서 엔진이 크래시 없이 스킵·대체 처리하는가
+  - [x] 섹션별 악기 구성 맵이 실제 트랙에 반영되는가
+  - [x] Playwright MCP: 편곡 설정 페이지에서 프리셋 선택 → 생성 요청 → 완료 후 4개 악기 트랙 표시 E2E 검증
 
 - **Task 020: 곡·세트리스트 CRUD API 및 홈 연동 (F011, F012)**
   - 곡 목록 API (`GET /api/songs`) — 상태·최신순 정렬, 페이지네이션
@@ -571,9 +576,9 @@ Task 번호를 부여하지 않은, 확정되지 않은 향후 아이디어 메�
 |---|---|---|
 | Phase 1: 애플리케이션 골격 구축 | 4 (Task 001~004) | ✅ 완료 |
 | Phase 2: UI/UX 완성 (더미 데이터) | 8 (Task 005~012) | ✅ 완료 |
-| Phase 3: 핵심 기능 구현 | 14 (Task 013~026) | 진행 중 (6/14) |
+| Phase 3: 핵심 기능 구현 | 14 (Task 013~026) | 진행 중 (7/14) |
 | Phase 4: 고급 기능 및 최적화 | 4 (Task 027~030) | 대기 |
-| **합계** | **30** | **18/30 완료** |
+| **합계** | **30** | **19/30 완료** |
 
 ## 기능 커버리지 매핑
 

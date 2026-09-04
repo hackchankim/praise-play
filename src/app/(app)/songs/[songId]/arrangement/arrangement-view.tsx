@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { routes } from "@/lib/routes";
 import { songRepository } from "@/lib/repositories/song-repository";
 import { arrangementRepository } from "@/lib/repositories/arrangement-repository";
+import { generateArrangementForSong } from "@/lib/api/arrangement-client";
 import type {
   ArrangementWithTracks,
   GenrePreset,
@@ -77,7 +78,7 @@ export function ArrangementView({ songId }: ArrangementViewProps) {
   const handleGenerate = useCallback(async () => {
     setGenerating(true);
     try {
-      const result = await arrangementRepository.generate(songId, { genrePreset: selectedPreset });
+      const result = await generateArrangementForSong(songId, { genrePreset: selectedPreset });
       setArrangement(result.arrangement);
       toast.success("편곡을 생성했습니다.");
     } catch (error) {
