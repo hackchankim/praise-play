@@ -158,8 +158,12 @@ export interface CreateSongWithImagesInput {
 export interface SongRepository {
   /** 최신순 곡 목록 조회 (GET /api/songs 계약과 대응) */
   list(params?: ListSongsParams): Promise<ListSongsResponse>;
-  /** 곡 전체 트리 조회. 존재하지 않으면 null — 라우트 핸들러가 이를 404로 변환한다 */
-  getTree(songId: string): Promise<GetSongTreeResponse | null>;
+  /**
+   * 곡 전체 트리 조회. 존재하지 않으면 null — 라우트 핸들러가 이를 404로 변환한다.
+   * draftCorrection(Task 018)은 포함하지 않는다 — 임시 저장은 이 리포지토리가 아니라
+   * song_drafts 테이블/라우트 핸들러의 관심사라, 응답 조립은 GET /api/songs/[songId] 쪽에서 한다.
+   */
+  getTree(songId: string): Promise<Omit<GetSongTreeResponse, "draftCorrection"> | null>;
   /**
    * 업로드 완료 시 draft 상태의 곡 레코드와 이미지 등록을 함께 만든다(트랜잭션, Task 015).
    * 소유자는 서버가 현재 로그인 사용자로 강제한다 — 클라이언트가 createdBy를 지정할 수 없다.
@@ -188,7 +192,7 @@ export class SupabaseSongRepository implements SongRepository {
     return { songs: (data ?? []).map(mapSong), nextCursor: null };
   }
 
-  async getTree(songId: string): Promise<GetSongTreeResponse | null> {
+  async getTree(songId: string): Promise<Omit<GetSongTreeResponse, "draftCorrection"> | null> {
     // sections/lines/chord_events/song_images를 한 번의 PostgREST 요청(resource embedding)으로
     // 함께 읽는다 — 곡 전체 트리를 1회 왕복으로 읽어야 한다는 완료 기준을 만족시키는 지점.
     const { data, error } = await supabaseRepositoryClient

@@ -7,6 +7,7 @@
 // 섹션의 repeat_target_section_id는 여기서 채우지 않는다(항상 null) — 도돌이표 기반 섹션 반복
 // 추론은 Task 017(섹션 자동 추론기)의 책임이다.
 import { createId } from "@/lib/repositories/mock-utils";
+import { estimateBeatOffset } from "@/lib/song-model/beat-offset";
 import type {
   StructureExtractionResult,
   TextExtractionResult,
@@ -57,26 +58,6 @@ interface StructureLineLookup {
   beatsInLine: number;
   /** primary/secondary 두 호출이 이 줄에서 불일치했는가 */
   mismatched: boolean;
-}
-
-/**
- * 가사 문자열 내 위치(charOffset) 비례로 코드의 박자 오프셋을 근사한다. 리드시트 코드 배치가
- * 가사 길이에 대략 비례한다는 흔한 가정이다 — 정확도 100%를 노리지 않는다(교정 UI가 최종 방어선).
- * 가사가 없는 간주 줄이면(lyricsLength === 0) 코드들을 줄 전체 박자에 걸쳐 균등 분배한다.
- */
-function estimateBeatOffset(
-  charOffset: number,
-  lyricsLength: number,
-  beatsInLine: number,
-  chordIndex: number,
-  chordCount: number,
-): number {
-  if (lyricsLength > 0) {
-    const ratio = Math.min(1, charOffset / lyricsLength);
-    return Math.round(ratio * beatsInLine * 100) / 100;
-  }
-  if (chordCount <= 1) return 0;
-  return Math.round((chordIndex / chordCount) * beatsInLine * 100) / 100;
 }
 
 function buildStructureLookup(

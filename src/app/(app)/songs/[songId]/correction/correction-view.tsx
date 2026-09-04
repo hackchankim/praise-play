@@ -18,7 +18,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ErrorState } from "@/components/domain/error-state";
 import { PageHeader } from "@/components/domain/page-header";
 import { routes } from "@/lib/routes";
-import { songRepository } from "@/lib/repositories/song-repository";
+import {
+  OptimisticLockConflictError,
+  deleteDraftCorrection,
+  fetchSongTree,
+  saveDraftCorrection,
+  saveSongCorrection,
+} from "@/lib/api/song-correction-client";
 import type { GetSongTreeResponse } from "@/lib/api/contracts";
 import type { SectionType } from "@/lib/song-model/types";
 import { ImageViewer } from "./image-viewer";
@@ -28,16 +34,14 @@ import {
   addChord,
   addLine,
   buildSaveCorrectionRequest,
-  clearDraft,
   collectReviewTargets,
   computeAbsoluteStartBeats,
   computeSectionDisplayLabels,
-  loadDraft,
+  fromSaveCorrectionRequest,
   mergeSectionWithNext,
   removeChord,
   removeLine,
   reorderLines,
-  saveDraft,
   splitSectionAtLine,
   toEditableSections,
   toEditableSong,
@@ -47,6 +51,10 @@ import {
   type EditableSection,
   type EditableSong,
 } from "./correction-types";
+
+// 마지막 편집 후 이 정도 지나면 서버에 임시 저장한다(저장 없이 이탈해도 이어서 교정 가능해야
+// 한다는 PRD 요구 — 명시적으로 "임시 저장 후 나가기"를 누르지 않아도 보호되게 한다).
+const AUTO_SAVE_DEBOUNCE_MS = 2500;
 
 interface CorrectionViewProps {
   songId: string;
@@ -110,8 +118,7 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
   const [loadRetryKey, setLoadRetryKey] = useState(0);
   useEffect(() => {
     let cancelled = false;
-    songRepository
-      .getTree(songId)
+    fetchSongTree(songId)
       .then((result) => {
         if (cancelled) return;
         if (!result) {
@@ -121,8 +128,8 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
         setTree(result);
         initialUpdatedAtRef.current = result.song.updatedAt;
 
-        const draft = loadDraft(songId, result.song.updatedAt);
-        if (draft) {
+        if (result.draftCorrection) {
+          const draft = fromSaveCorrectionRequest(result.draftCorrection);
           setSongMeta(draft.song);
           setSections(draft.sections);
           setDraftBannerVisible(true);
@@ -164,6 +171,22 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
     setDirty(true);
   };
 
+  // ===== 자동 저장(서버 임시 저장, 디바운스) =====
+  // "임시 저장 후 나가기" 버튼을 누르지 않고 그냥 탭을 닫아도 이어서 교정할 수 있어야 한다는
+  // PRD 요구를 만족시키려면 명시적 조작 없이도 주기적으로 저장돼야 한다.
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!dirty || status !== "ready") return;
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => {
+      const request = buildSaveCorrectionRequest(songMeta, sections, initialUpdatedAtRef.current);
+      void saveDraftCorrection(songId, request);
+    }, AUTO_SAVE_DEBOUNCE_MS);
+    return () => {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    };
+  }, [songId, songMeta, sections, dirty, status]);
+
   const startBeats = useMemo(() => computeAbsoluteStartBeats(sections), [sections]);
   const displayLabels = useMemo(() => computeSectionDisplayLabels(sections), [sections]);
   const reviewTargets = useMemo(() => collectReviewTargets(sections), [sections]);
@@ -198,27 +221,36 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
     setIsSaving(true);
     try {
       const request = buildSaveCorrectionRequest(songMeta, sections, initialUpdatedAtRef.current);
-      await songRepository.saveCorrection(songId, request);
-      clearDraft(songId);
+      // 저장(save_song_correction RPC)이 성공하면 서버가 같은 트랜잭션에서 임시 저장 행도
+      // 함께 지운다 — 여기서 따로 지울 필요가 없다.
+      await saveSongCorrection(songId, request);
       setDirty(false);
       router.push(routes.songArrangement(songId));
     } catch (error) {
-      setSaveError(
-        error instanceof Error ? error.message : "저장에 실패했습니다. 다시 시도해주세요.",
-      );
+      if (error instanceof OptimisticLockConflictError) {
+        setSaveError("다른 곳에서 먼저 저장되었습니다. 페이지를 새로고침한 뒤 다시 시도해주세요.");
+      } else {
+        setSaveError(
+          error instanceof Error ? error.message : "저장에 실패했습니다. 다시 시도해주세요.",
+        );
+      }
     } finally {
       setIsSaving(false);
     }
   }
 
-  function tempSaveAndLeave() {
-    saveDraft(songId, initialUpdatedAtRef.current, songMeta, sections);
+  async function tempSaveAndLeave() {
+    const request = buildSaveCorrectionRequest(songMeta, sections, initialUpdatedAtRef.current);
+    await saveDraftCorrection(songId, request);
     setDirty(false);
     setLeaveDialogOpen(false);
     router.push(routes.home());
   }
 
   function discardAndLeave() {
+    // 자동 저장으로 이미 서버에 임시 저장이 남아 있을 수 있다 — "버린다"는 의도를 지키려면
+    // 다음 접속 시 되살아나지 않도록 함께 지운다.
+    void deleteDraftCorrection(songId);
     setDirty(false);
     setLeaveDialogOpen(false);
     router.push(routes.home());
@@ -399,7 +431,7 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
             variant="ghost"
             size="xs"
             onClick={() => {
-              clearDraft(songId);
+              void deleteDraftCorrection(songId);
               setSongMeta(toEditableSong(tree.song));
               setSections(toEditableSections(tree.song));
               setDraftBannerVisible(false);
