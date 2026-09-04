@@ -41,6 +41,8 @@ export interface MergedSection {
   orderIndex: number;
   startBeat: number;
   lengthBeats: number;
+  /** 항상 null로 시작한다 — 도돌이표 기반 반복 추론은 Task 017의 applyPostProcessing()이 채운다. */
+  repeatTargetSectionId: string | null;
   lines: MergedLine[];
 }
 
@@ -155,6 +157,7 @@ export function mergeExtractionResults(
       orderIndex: sectionIndex,
       startBeat: sectionStartBeat,
       lengthBeats,
+      repeatTargetSectionId: null,
       lines,
     };
   });
