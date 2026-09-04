@@ -69,6 +69,11 @@ export interface ListSongsResponse {
 export interface GetSongTreeResponse {
   song: SongTree;
   imageUrls: string[];
+  /**
+   * 서버에 저장된 임시 저장 내용(Task 018) — song.updatedAt이 바뀐 뒤에 남은 낡은 임시 저장은
+   * 서버가 걸러내고 null로 내려준다(더 이상 유효한 기준값이 아니므로).
+   */
+  draftCorrection: SaveCorrectionRequest | null;
 }
 
 /** id가 있으면 갱신, 없으면 신규 생성 (upsert). */

@@ -11,6 +11,7 @@ import type {
 } from "@/lib/api/contracts";
 import { SECTION_TYPES, type SectionType, type SongTree } from "@/lib/song-model/types";
 import { SECTION_LABEL } from "@/components/domain/section-badge";
+import { estimateBeatOffset } from "@/lib/song-model/beat-offset";
 
 export interface EditableChordEvent {
   /** 이 편집 세션 내에서만 쓰는 안정적 식별자 (React key, 드래그 대상 식별용). 서버로는 전송하지 않는다 */
@@ -349,6 +350,19 @@ export function addChord(
   };
 }
 
+/**
+ * 이 줄이 차지하는 박자 폭. 다음 줄의 startBeat(줄들이 항상 startBeat 오름차순은 아닐 수 있어
+ * 정렬 후 계산)까지, 마지막 줄이면 섹션 lengthBeats까지를 이 줄의 몫으로 본다.
+ */
+function lineBeatsSpan(section: EditableSection, line: EditableLine): number {
+  const sorted = [...section.lines].sort((a, b) => a.startBeat - b.startBeat);
+  const index = sorted.findIndex((candidate) => candidate.uiKey === line.uiKey);
+  if (index === -1) return Math.max(1, section.lengthBeats);
+  const next = sorted[index + 1];
+  const span = (next ? next.startBeat : section.lengthBeats) - line.startBeat;
+  return span > 0 ? span : 1;
+}
+
 export function updateChord(
   section: EditableSection,
   lineUiKey: string,
@@ -359,20 +373,37 @@ export function updateChord(
     ...section,
     lines: section.lines.map((line) => {
       if (line.uiKey !== lineUiKey) return line;
+
+      const chordIndex = line.chordEvents.findIndex((chord) => chord.uiKey === chordUiKey);
+      // 드래그로 charOffset만 바뀌고 beatOffset은 호출부가 함께 지정하지 않았다면(수동 입력과
+      // 구분하는 지점) 가사 위치 비례로 beatOffset을 다시 계산해 둘을 동기화한다 — 추출 잡
+      // 병합(merge-extraction.ts)의 초기 추정과 같은 공식을 쓴다.
+      const shouldSyncBeat = patch.charOffset !== undefined && patch.beatOffset === undefined;
+      const lineSpan = shouldSyncBeat ? lineBeatsSpan(section, line) : 0;
+
       return {
         ...line,
-        chordEvents: line.chordEvents.map((chord) =>
-          chord.uiKey === chordUiKey
-            ? {
-                ...chord,
-                ...patch,
-                charOffset:
-                  patch.charOffset === undefined
-                    ? chord.charOffset
-                    : Math.max(0, Math.min(patch.charOffset, line.lyrics.length)),
-              }
-            : chord,
-        ),
+        chordEvents: line.chordEvents.map((chord, index) => {
+          if (chord.uiKey !== chordUiKey) return chord;
+          const nextCharOffset =
+            patch.charOffset === undefined
+              ? chord.charOffset
+              : Math.max(0, Math.min(patch.charOffset, line.lyrics.length));
+          return {
+            ...chord,
+            ...patch,
+            charOffset: nextCharOffset,
+            beatOffset: shouldSyncBeat
+              ? estimateBeatOffset(
+                  nextCharOffset,
+                  line.lyrics.length,
+                  lineSpan,
+                  chordIndex === -1 ? index : chordIndex,
+                  line.chordEvents.length,
+                )
+              : (patch.beatOffset ?? chord.beatOffset),
+          };
+        }),
       };
     }),
   };
@@ -419,56 +450,40 @@ export function collectReviewTargets(sections: EditableSection[]): ReviewTarget[
   return targets;
 }
 
-// ===== 임시 저장(클라이언트 상태 유지) =====
-// Phase 2에는 서버 임시저장이 없다(Task 018 소관). "임시 저장 후 나가기"는 sessionStorage에
-// 편집 중 상태를 남겨 같은 브라우저 세션에서 이 곡 교정 페이지로 돌아왔을 때 이어서 작업할 수 있게
-// 흉내만 낸다.
+// ===== 임시 저장(서버 저장, Task 018) =====
+// 임시 저장은 songs.updated_at(낙관적 잠금 기준값)을 건드리지 않도록 별도 song_drafts
+// 테이블에 저장한다(route.ts/draft-client.ts 참고) — 여기서는 그 payload와 편집 상태 사이의
+// 순수 변환만 담당한다. SaveCorrectionRequest를 그대로 draft payload로 쓴다: 이미 저장 요청과
+// 똑같은 모양이라 별도 타입을 만들 필요가 없다.
 
-interface CorrectionDraft {
-  updatedAt: string;
+/** 서버에서 불러온 draft(SaveCorrectionRequest 모양)를 편집 상태로 되돌린다. */
+export function fromSaveCorrectionRequest(request: SaveCorrectionRequest): {
   song: EditableSong;
   sections: EditableSection[];
-  savedAt: string;
-}
-
-function draftKey(songId: string): string {
-  return `praise:correction-draft:${songId}`;
-}
-
-export function saveDraft(
-  songId: string,
-  updatedAt: string,
-  song: EditableSong,
-  sections: EditableSection[],
-): void {
-  if (typeof window === "undefined") return;
-  const draft: CorrectionDraft = { updatedAt, song, sections, savedAt: new Date().toISOString() };
-  try {
-    window.sessionStorage.setItem(draftKey(songId), JSON.stringify(draft));
-  } catch {
-    // sessionStorage를 못 쓰는 환경(프라이빗 모드 등)이면 임시 저장은 조용히 무시한다.
-  }
-}
-
-export function loadDraft(songId: string, currentUpdatedAt: string): CorrectionDraft | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.sessionStorage.getItem(draftKey(songId));
-    if (!raw) return null;
-    const draft = JSON.parse(raw) as CorrectionDraft;
-    // 그 사이 다른 경로로 곡이 갱신됐다면(낙관적 잠금 기준값이 바뀜) 낡은 임시 저장이므로 버린다.
-    if (draft.updatedAt !== currentUpdatedAt) return null;
-    return draft;
-  } catch {
-    return null;
-  }
-}
-
-export function clearDraft(songId: string): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.sessionStorage.removeItem(draftKey(songId));
-  } catch {
-    // 무시
-  }
+} {
+  return {
+    song: request.song,
+    sections: request.sections.map((section) => ({
+      clientKey: section.clientKey,
+      id: section.id,
+      type: section.type,
+      lengthBeats: section.lengthBeats,
+      repeatTarget: section.repeatTarget,
+      lines: section.lines.map((line) => ({
+        uiKey: line.id ?? createLineUiKey(),
+        id: line.id,
+        lyrics: line.lyrics,
+        orderIndex: line.orderIndex,
+        startBeat: line.startBeat,
+        chordEvents: line.chordEvents.map((chord) => ({
+          uiKey: chord.id ?? createChordUiKey(),
+          id: chord.id,
+          chord: chord.chord,
+          charOffset: chord.charOffset,
+          beatOffset: chord.beatOffset,
+          needsReview: chord.needsReview,
+        })),
+      })),
+    })),
+  };
 }
