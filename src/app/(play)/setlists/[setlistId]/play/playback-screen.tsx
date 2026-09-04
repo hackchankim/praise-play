@@ -9,10 +9,11 @@ import { Progress } from "@/components/ui/progress";
 import { SectionBadge } from "@/components/domain/section-badge";
 import { cn } from "@/lib/utils";
 import { routes } from "@/lib/routes";
+import type { ActivationStatus } from "./use-live-playback";
 import {
   computeSectionDisplayLabels,
   currentLineIndex,
-  currentSection,
+  sectionIndexAtBeat,
   setlistProgressSeconds,
   type PlaybackState,
   type QueueEntry,
@@ -29,15 +30,17 @@ function formatSeconds(totalSeconds: number): string {
 interface PlaybackScreenProps {
   queue: QueueEntry[];
   state: PlaybackState;
+  activationStatus: ActivationStatus;
   onTogglePlay: () => void;
   onToggleLoop: () => void;
-  onJumpTo: (songIndex: number, sectionIndex: number) => void;
+  onJumpTo: (songIndex: number, sectionIndex: number, targetBeat?: number) => void;
   onCancelPending: () => void;
 }
 
 export function PlaybackScreen({
   queue,
   state,
+  activationStatus,
   onTogglePlay,
   onToggleLoop,
   onJumpTo,
@@ -46,7 +49,8 @@ export function PlaybackScreen({
   const feedRef = useRef<SetlistLyricsFeedHandle>(null);
 
   const song = queue[state.songIndex].song;
-  const section = currentSection(state, queue);
+  const sectionIndex = sectionIndexAtBeat(song.sections, state.absoluteBeat);
+  const section = song.sections[sectionIndex];
   const currentSongLabels = computeSectionDisplayLabels(song.sections);
 
   const { elapsedSeconds: setlistElapsedSeconds, totalSeconds: setlistTotalSeconds } =
@@ -116,7 +120,7 @@ export function PlaybackScreen({
           모두에 ring이 들어갈 여유 패딩을 준다. */}
       <div className="flex gap-2 overflow-x-auto p-1.5">
         {song.sections.map((sec, index) => {
-          const isCurrent = index === state.sectionIndex;
+          const isCurrent = index === sectionIndex;
           const isPending =
             state.pending?.songIndex === state.songIndex && state.pending?.sectionIndex === index;
           return (
@@ -161,8 +165,8 @@ export function PlaybackScreen({
         ref={feedRef}
         queue={queue}
         currentSongIndex={state.songIndex}
-        currentSectionIndex={state.sectionIndex}
-        currentLineIndex={currentLineIndex(section, state.elapsedBeats)}
+        currentSectionIndex={sectionIndex}
+        currentLineIndex={currentLineIndex(section, state.absoluteBeat - section.startBeat)}
         isPlaying={state.isPlaying}
         loopSection={state.loopSection}
         pendingSongIndex={state.pending?.songIndex ?? null}
@@ -198,12 +202,18 @@ export function PlaybackScreen({
           <Button
             size="playback-icon"
             onClick={onTogglePlay}
+            disabled={activationStatus === "activating"}
             aria-label={state.isPlaying ? "일시정지" : "재생"}
             className="rounded-full"
           >
             {state.isPlaying ? <Pause /> : <Play />}
           </Button>
         </div>
+        {activationStatus === "failed" && (
+          <p className="text-center text-xs text-destructive">
+            오디오를 활성화하지 못했습니다. 재생 버튼을 다시 눌러주세요.
+          </p>
+        )}
       </div>
     </div>
   );

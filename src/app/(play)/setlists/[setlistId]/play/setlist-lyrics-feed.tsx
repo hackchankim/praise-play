@@ -20,7 +20,7 @@ interface SetlistLyricsFeedProps {
   loopSection: boolean;
   pendingSongIndex: number | null;
   pendingSectionIndex: number | null;
-  onJumpTo: (songIndex: number, sectionIndex: number) => void;
+  onJumpTo: (songIndex: number, sectionIndex: number, targetBeat?: number) => void;
   onToggleLoop: () => void;
 }
 
@@ -171,11 +171,23 @@ export const SetlistLyricsFeed = forwardRef<SetlistLyricsFeedHandle, SetlistLyri
                                     : isCurrentSection && lineIndex === currentLineIndex
                                       ? "current"
                                       : "upcoming";
+                                // 줄 단위 점프("마지막 소절 반복" 등, ROADMAP Task 022) — 섹션
+                                // 점프와 정확히 같은 메커니즘을 재사용하되 목표 beat만 섹션 시작이
+                                // 아니라 이 줄의 시작(섹션 기준 상대값을 절대 beat로 환산)으로 준다.
                                 return (
-                                  <p
+                                  <button
                                     key={line.id}
+                                    type="button"
+                                    onClick={() =>
+                                      onJumpTo(
+                                        songIndex,
+                                        sectionIndex,
+                                        section.startBeat + line.startBeat,
+                                      )
+                                    }
+                                    aria-label={`이 줄(${line.lyrics || "빈 줄"})로 이동`}
                                     className={cn(
-                                      "text-lg leading-snug sm:text-xl",
+                                      "min-h-11 rounded-md px-2 py-0.5 text-lg leading-snug transition-colors hover:bg-primary/10 sm:text-xl",
                                       status === "current" && "font-semibold text-foreground",
                                       status !== "current" && "text-muted-foreground",
                                       // 이미 부른 줄과 아직 안 부른 줄을 구분하는 신호가 필요하지만,
@@ -187,7 +199,7 @@ export const SetlistLyricsFeed = forwardRef<SetlistLyricsFeedHandle, SetlistLyri
                                     )}
                                   >
                                     {line.lyrics || " "}
-                                  </p>
+                                  </button>
                                 );
                               })
                             )}
