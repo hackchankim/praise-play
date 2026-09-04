@@ -17,15 +17,6 @@ export default async function HomePage() {
     setlistRepository.list(),
   ]);
 
-  // 목록 화면에는 찬양콘티별 곡 수가 필요하지만 ListSetlistsResponse 계약에는 포함되지 않는다.
-  // 찬양콘티 개수가 많지 않은 MVP 단계라 각 찬양콘티를 getById로 다시 조회해 items.length를 구한다.
-  const setlistsWithCount = await Promise.all(
-    setlists.map(async (setlist) => {
-      const detail = await setlistRepository.getById(setlist.id);
-      return { setlist, songCount: detail?.setlist.items.length ?? 0 };
-    }),
-  );
-
   return (
     <div className="flex flex-1 flex-col gap-8 p-6">
       <PageHeader
@@ -65,13 +56,13 @@ export default async function HomePage() {
 
       <section id="setlists" className="flex flex-col gap-4 scroll-mt-20">
         <h2 className="text-lg font-semibold">찬양콘티</h2>
-        {setlistsWithCount.length > 0 ? (
+        {setlists.length > 0 ? (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {setlistsWithCount.map(({ setlist, songCount }) => (
+            {setlists.map((setlist) => (
               <SetlistCard
                 key={setlist.id}
                 setlist={setlist}
-                songCount={songCount}
+                songCount={setlist.itemCount}
                 href={routes.setlist(setlist.id)}
               />
             ))}

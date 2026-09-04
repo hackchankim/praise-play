@@ -1,27 +1,36 @@
 import Link from "next/link";
 import { ListMusic } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DeleteSetlistButton } from "@/components/domain/delete-setlist-button";
 import type { Setlist } from "@/lib/song-model/types";
 
 interface SetlistCardProps {
-  setlist: Pick<Setlist, "name">;
+  setlist: Pick<Setlist, "id" | "name">;
   songCount: number;
   href: string;
 }
 
-// 카드 전체를 <Link>로 감싼다. 카드 내부에 버튼 등 인터랙티브 요소를 추가할 경우
-// <a> 안에 <button>이 중첩되어 무효한 마크업이 되므로, 그때는 onClick/role 기반
-// 카드 패턴으로 전환할 것.
+// song-card.tsx와 같은 이유·같은 패턴(카드를 덮는 절대 위치 <Link> + 콘텐츠는
+// pointer-events-none으로 투명하게, 삭제 버튼만 pointer-events-auto로 다시 켬)으로
+// 삭제 버튼을 추가한다.
 export function SetlistCard({ setlist, songCount, href }: SetlistCardProps) {
   return (
-    <Link href={href}>
-      <Card className="transition-colors hover:border-primary/50">
-        <CardHeader className="flex-row items-center gap-2 space-y-0">
+    <Card className="relative transition-colors hover:border-primary/50">
+      <Link href={href} className="absolute inset-0" aria-label={setlist.name} />
+      <CardHeader className="pointer-events-none relative flex-row items-center justify-between gap-2 space-y-0">
+        <div className="flex items-center gap-2">
           <ListMusic className="size-4 text-muted-foreground" />
           <CardTitle className="text-base">{setlist.name}</CardTitle>
-        </CardHeader>
-        <CardContent className="text-sm text-muted-foreground">{songCount}곡</CardContent>
-      </Card>
-    </Link>
+        </div>
+        <DeleteSetlistButton
+          setlistId={setlist.id}
+          setlistName={setlist.name}
+          className="pointer-events-auto"
+        />
+      </CardHeader>
+      <CardContent className="pointer-events-none relative text-sm text-muted-foreground">
+        {songCount}곡
+      </CardContent>
+    </Card>
   );
 }

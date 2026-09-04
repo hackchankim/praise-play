@@ -122,7 +122,7 @@ export interface GenerateArrangementResponse {
 // ===== 세트리스트 (Task 020) =====
 
 export interface ListSetlistsResponse {
-  setlists: Setlist[];
+  setlists: Array<Setlist & { itemCount: number }>;
   nextCursor: string | null;
 }
 
@@ -130,9 +130,17 @@ export interface CreateSetlistRequest {
   name: string;
 }
 
+export interface CreateSetlistResponse {
+  setlist: Setlist;
+}
+
 /** 세트리스트 이름 변경 (PATCH /api/setlists/[id] 계약과 대응) */
 export interface UpdateSetlistRequest {
   name: string;
+}
+
+export interface UpdateSetlistResponse {
+  setlist: Setlist;
 }
 
 export interface UpdateSetlistItemsRequest {

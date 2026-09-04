@@ -21,7 +21,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { setlistRepository } from "@/lib/repositories/setlist-repository";
+import {
+  createSetlist,
+  fetchSetlist,
+  fetchSetlists,
+  updateSetlistItems,
+} from "@/lib/api/setlists-client";
 import type { Setlist } from "@/lib/song-model/types";
 
 const NEW_SETLIST_VALUE = "__new__";
@@ -51,8 +56,7 @@ export function AddToSetlistDialog({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    setlistRepository
-      .list()
+    fetchSetlists()
       .then(({ setlists: list }) => {
         if (cancelled) return;
         setSetlists(list);
@@ -72,10 +76,10 @@ export function AddToSetlistDialog({
     try {
       const setlistId =
         selected === NEW_SETLIST_VALUE
-          ? (await setlistRepository.create({ name: newName.trim() || "새 찬양콘티" }, user.id)).id
+          ? (await createSetlist({ name: newName.trim() || "새 찬양콘티" })).setlist.id
           : selected;
 
-      const detail = await setlistRepository.getById(setlistId);
+      const detail = await fetchSetlist(setlistId);
       const existingItems = detail?.setlist.items ?? [];
       // 이미 같은 곡이 들어 있으면 편곡만 갱신하고, 없으면 맨 뒤에 추가한다.
       const alreadyIn = existingItems.find((item) => item.songId === songId);
@@ -83,7 +87,7 @@ export function AddToSetlistDialog({
         ? existingItems.map((item) => (item.songId === songId ? { ...item, arrangementId } : item))
         : [...existingItems, { songId, arrangementId, orderIndex: existingItems.length }];
 
-      await setlistRepository.updateItems(setlistId, {
+      await updateSetlistItems(setlistId, {
         items: nextItems.map((item, index) => ({
           songId: item.songId,
           arrangementId: item.arrangementId,

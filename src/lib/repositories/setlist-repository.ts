@@ -11,7 +11,7 @@ import type {
 } from "@/lib/api/contracts";
 import type { Setlist, SetlistItem, SetlistWithItems } from "@/lib/song-model/types";
 import { createId } from "@/lib/repositories/mock-utils";
-import { NotFoundError } from "@/lib/repositories/errors";
+import { NotFoundError, ValidationError } from "@/lib/repositories/errors";
 import { supabaseRepositoryClient } from "@/lib/supabase/repository-client";
 
 interface SetlistRow {
@@ -31,6 +31,11 @@ interface SetlistItemRow {
 
 function mapSetlist(row: SetlistRow): Setlist {
   return { id: row.id, name: row.name, ownerId: row.owner_id, createdAt: row.created_at };
+}
+
+/** PostgREST embedded count(`setlist_items(count)`)는 항상 정확히 한 행 `{ count }`로 온다. */
+function mapSetlistWithItemCount(row: SetlistRow & { setlist_items: { count: number }[] }) {
+  return { ...mapSetlist(row), itemCount: row.setlist_items[0]?.count ?? 0 };
 }
 
 function mapSetlistItem(row: SetlistItemRow): SetlistItem {
@@ -73,15 +78,22 @@ export interface SetlistRepository {
 
 export class SupabaseSetlistRepository implements SetlistRepository {
   async list(params: ListSetlistsParams = {}): Promise<ListSetlistsResponse> {
+    // setlist_items(count)는 PostgREST 임베디드 집계 — 목록 화면에 필요한 곡 수를 세트리스트당
+    // getById 재조회 없이 이 한 번의 요청으로 함께 받는다(홈 화면의 N+1 임시 방편 제거, Task 020).
     let query = supabaseRepositoryClient
       .from("setlists")
-      .select("*")
+      .select("*, setlist_items(count)")
       .order("created_at", { ascending: false });
     if (params.limit !== undefined) query = query.limit(params.limit);
 
     const { data, error } = await query;
     if (error) throw new Error(`찬양콘티 목록 조회 실패: ${error.message}`);
-    return { setlists: (data ?? []).map(mapSetlist), nextCursor: null };
+    return {
+      setlists: (data ?? []).map((row) =>
+        mapSetlistWithItemCount(row as SetlistRow & { setlist_items: { count: number }[] }),
+      ),
+      nextCursor: null,
+    };
   }
 
   async getById(setlistId: string): Promise<GetSetlistResponse | null> {
@@ -135,6 +147,9 @@ export class SupabaseSetlistRepository implements SetlistRepository {
     });
     if (error) {
       if (error.code === "PT404") throw new NotFoundError("찬양콘티", setlistId);
+      if (error.code === "PT422") {
+        throw new ValidationError("편곡이 해당 곡에 속하지 않습니다.");
+      }
       throw new Error(`찬양콘티 항목 저장 실패: ${error.message}`);
     }
 
@@ -144,8 +159,15 @@ export class SupabaseSetlistRepository implements SetlistRepository {
   }
 
   async delete(setlistId: string): Promise<void> {
-    const { error } = await supabaseRepositoryClient.from("setlists").delete().eq("id", setlistId);
+    // .select()로 실제 삭제된 행을 받아 RLS가 걸러낸 "남의 것/존재하지 않음"과 구분한다
+    // (song-repository.delete()와 동일한 이유).
+    const { data, error } = await supabaseRepositoryClient
+      .from("setlists")
+      .delete()
+      .eq("id", setlistId)
+      .select("id");
     if (error) throw new Error(`찬양콘티 삭제 실패: ${error.message}`);
+    if (!data || data.length === 0) throw new NotFoundError("찬양콘티", setlistId);
   }
 }
 

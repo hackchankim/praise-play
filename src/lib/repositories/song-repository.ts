@@ -149,6 +149,48 @@ export interface ListSongsParams {
   limit?: number;
 }
 
+interface SongListCursor {
+  createdAt: string;
+  id: string;
+}
+
+// decodeSongCursor가 통과시킨 값이 그대로 supabase-js .or()의 raw PostgREST 필터 문자열에
+// 이어붙는다(.or()는 이스케이프를 하지 않는다) — 콤마/괄호가 섞인 값이 들어오면 필터 구문이
+// 깨지거나 의도치 않은 조건이 주입된다. cursor는 완전히 클라이언트가 통제하는 쿼리 파라미터라
+// 형식을 검증하지 않으면 그대로 삽입 지점이 된다(code review 지적). created_at은 항상 이
+// 리포지토리가 만든 ISO 타임스탬프(row.created_at)였고 id는 createId()가 만든 "prefix-uuid"
+// 형식(영숫자/하이픈만)이므로, 그 형식을 벗어나면 커서를 신뢰하지 않고 무시한다.
+const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+const CURSOR_ID_RE = /^[A-Za-z0-9-]+$/;
+
+/**
+ * created_at만으로는 동시에 생성된 곡들의 순서가 안정적이지 않아(같은 값이 여러 행에 있을 수
+ * 있음) id를 타이브레이커로 더한 keyset 커서. btoa/atob를 쓰는 이유는 이 리포지토리가
+ * 클라이언트 컴포넌트(arrangement-view.tsx 등)에서도 여전히 직접 임포트돼 브라우저 번들에
+ * 포함되므로(Buffer는 Node 전용이라 브라우저에서 죽는다) — 커서 내용이 ISO 타임스탬프+UUID로
+ * 항상 ASCII라 btoa로 충분하다.
+ */
+function encodeSongCursor(cursor: SongListCursor): string {
+  return btoa(JSON.stringify(cursor));
+}
+
+function decodeSongCursor(raw: string): SongListCursor | null {
+  try {
+    const parsed = JSON.parse(atob(raw)) as Partial<SongListCursor>;
+    if (
+      typeof parsed.createdAt === "string" &&
+      ISO_TIMESTAMP_RE.test(parsed.createdAt) &&
+      typeof parsed.id === "string" &&
+      CURSOR_ID_RE.test(parsed.id)
+    ) {
+      return { createdAt: parsed.createdAt, id: parsed.id };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export interface CreateSongWithImagesInput {
   title: string;
   /** R2에 이미 업로드된 객체 키. 순서대로 song_images에 등록된다 */
@@ -182,14 +224,39 @@ export class SupabaseSongRepository implements SongRepository {
     let query = supabaseRepositoryClient
       .from("songs")
       .select("*")
-      .order("created_at", { ascending: false });
-    if (params.limit !== undefined) query = query.limit(params.limit);
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false });
+
+    if (params.cursor) {
+      const cursor = decodeSongCursor(params.cursor);
+      if (cursor) {
+        // created_at보다 오래됐거나, created_at이 같으면 id가 더 작은 행부터 — 정렬 기준과
+        // 정확히 같은 튜플 비교라야 동시 생성된 행이 중복/누락 없이 다음 페이지에 이어진다.
+        query = query.or(
+          `created_at.lt.${cursor.createdAt},and(created_at.eq.${cursor.createdAt},id.lt.${cursor.id})`,
+        );
+      }
+    }
+
+    // limit을 넘기지 않은 호출부(홈 화면의 "내 곡" 목록, 곡 추가 다이얼로그의 검색 대상 등)는
+    // 지금까지처럼 전체 목록을 받는다 — 여기서 임의로 기본 페이지 크기를 강제하면 그 호출부들이
+    // "더 보기"를 구현하지 않은 채로 조용히 일부만 보게 된다(code review 지적, 실제 회귀였음).
+    // limit을 명시한 호출자에게만 진짜 keyset 페이지네이션(다음 페이지 존재 여부 포함)을 적용한다.
+    if (params.limit !== undefined) query = query.limit(params.limit + 1);
 
     const { data, error } = await query;
     if (error) throw new Error(`곡 목록 조회 실패: ${error.message}`);
-    // 목 구현체와 마찬가지로 커서를 실제로 해석하지 않고 항상 첫 페이지 전체를 반환한다.
-    // created_at/id 기반 keyset 페이지네이션은 Task 020에서 붙인다.
-    return { songs: (data ?? []).map(mapSong), nextCursor: null };
+
+    const rows = data ?? [];
+    // limit보다 하나 더 요청해 그 한 행이 실제로 왔는지로 "다음 페이지가 있는가"를 판단한다 —
+    // count 쿼리를 별도로 날리지 않고 왕복 1회로 끝낸다.
+    const hasMore = params.limit !== undefined && rows.length > params.limit;
+    const pageRows = hasMore ? rows.slice(0, params.limit) : rows;
+    const last = pageRows[pageRows.length - 1];
+    const nextCursor =
+      hasMore && last ? encodeSongCursor({ createdAt: last.created_at, id: last.id }) : null;
+
+    return { songs: pageRows.map(mapSong), nextCursor };
   }
 
   async getTree(songId: string): Promise<Omit<GetSongTreeResponse, "draftCorrection"> | null> {
@@ -304,8 +371,15 @@ export class SupabaseSongRepository implements SongRepository {
   async delete(songId: string): Promise<void> {
     // sections/lines/chord_events/arrangements/instrument_tracks/setlist_items는 모두
     // ON DELETE CASCADE로 연결돼 있어 별도 삭제가 필요 없다.
-    const { error } = await supabaseRepositoryClient.from("songs").delete().eq("id", songId);
+    // .select()를 붙여 실제로 삭제된 행을 돌려받는다 — RLS가 남의 곡이거나 존재하지 않는
+    // songId를 조용히 0행 삭제로 처리하므로(에러가 안 남), 그걸 구분하려면 이 방법뿐이다.
+    const { data, error } = await supabaseRepositoryClient
+      .from("songs")
+      .delete()
+      .eq("id", songId)
+      .select("id");
     if (error) throw new Error(`곡 삭제 실패: ${error.message}`);
+    if (!data || data.length === 0) throw new NotFoundError("곡", songId);
   }
 }
 
