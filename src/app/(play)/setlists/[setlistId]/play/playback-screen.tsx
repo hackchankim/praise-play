@@ -51,6 +51,32 @@ export function PlaybackScreen({
   const song = queue[state.songIndex].song;
   const sectionIndex = sectionIndexAtBeat(song.sections, state.absoluteBeat);
   const section = song.sections[sectionIndex];
+
+  // sectionIndexAtBeat은 sections가 비어 있어도 방어적으로 0을 돌려준다(playback-state.ts
+  // 자체 문서 참고) — 하지만 song.sections[0]은 그 경우 정말로 undefined다. 추출/교정 결과가
+  // 섹션 하나 없이 저장된 곡이 세트리스트에 들어가면(정상적으로는 correction-view.tsx가 막아야
+  // 하지만, 검증 이전에 저장된 기존 데이터일 수도 있다) section.startBeat 등을 그대로
+  // 참조하는 순간 재생 화면 전체가 크래시한다(code review 지적, 코드 추적으로 재현 가능함을
+  // 확인). 크래시 대신 이 곡만 건너뛸 수 있는 안내 화면을 보여준다.
+  if (!section) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+        <p className="text-lg font-semibold">재생할 수 없는 곡입니다</p>
+        <p className="text-sm text-muted-foreground">
+          {song.title}에 섹션 정보가 없습니다. 곡 교정 화면에서 구조를 다시 확인해주세요.
+        </p>
+        {state.songIndex + 1 < queue.length ? (
+          <Button onClick={() => onJumpTo(state.songIndex + 1, 0)}>다음 곡으로 건너뛰기</Button>
+        ) : (
+          <Link href={routes.home()} className={cn(buttonVariants(), "w-fit")}>
+            <Home />
+            홈으로 이동
+          </Link>
+        )}
+      </div>
+    );
+  }
+
   const currentSongLabels = computeSectionDisplayLabels(song.sections);
 
   const { elapsedSeconds: setlistElapsedSeconds, totalSeconds: setlistTotalSeconds } =

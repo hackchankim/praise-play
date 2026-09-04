@@ -45,9 +45,23 @@ async function waitForClerkGlobal(timeoutMs = 5000): Promise<Window["Clerk"]> {
 async function getClerkAccessToken(): Promise<string | null> {
   if (typeof window !== "undefined") {
     const clerk = await waitForClerkGlobal();
+    if (!clerk) {
+      // waitForClerkGlobal이 타임아웃(기본 5초)까지 window.Clerk를 못 봤다는 뜻 — 아래
+      // clerk?.load()/getToken()은 옵셔널 체이닝으로 그냥 조용히 undefined/null을 반환하고,
+      // Supabase 클라이언트는 이를 "토큰 없음"으로 보고 anon으로 요청을 내보낸다. RLS가
+      // anon을 거부하는 건 정상 동작이지만, 그 결과가 "데이터가 원래 없음"과 구분되지 않는
+      // 빈 화면으로만 보여서 실제 원인(Clerk 스크립트 로딩 지연/차단)을 진단할 방법이 없다
+      // (code review 지적, 재현 가능함을 코드 추적으로 확인). 콘솔에라도 원인을 남긴다 —
+      // 네트워크가 느리거나 광고 차단기·회사 프록시가 스크립트를 막는 경우 실제로 벌어질 수
+      // 있다.
+      console.error(
+        "[repository-client] window.Clerk가 로드되지 않아 인증 토큰 없이(anon) Supabase 요청을 보냅니다 — 네트워크 상태나 광고 차단기/프록시를 확인해주세요.",
+      );
+      return null;
+    }
     // load()는 이미 로드된 뒤에 호출해도 즉시 반환하는 멱등 함수라, 매번 await해도 안전하다.
-    await clerk?.load();
-    return (await clerk?.session?.getToken()) ?? null;
+    await clerk.load();
+    return (await clerk.session?.getToken()) ?? null;
   }
   const { auth } = await import("@clerk/nextjs/server");
   return (await auth()).getToken();

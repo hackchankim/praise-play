@@ -28,6 +28,7 @@ import { PageHeader } from "@/components/domain/page-header";
 import { cn } from "@/lib/utils";
 import { routes } from "@/lib/routes";
 import { songRepository } from "@/lib/repositories/song-repository";
+import { WriteCommittedButUnconfirmedError } from "@/lib/repositories/errors";
 import { deleteUploadedImage, uploadImage } from "@/lib/uploads/upload-image";
 import { triggerExtraction } from "@/lib/extraction/trigger-extraction";
 
@@ -353,16 +354,24 @@ export default function SongsUploadPage() {
         })),
       });
       songId = song.id;
-    } catch {
-      // 곡 생성이 실패하면 방금 올린 객체들이 고아로 남는다 — 정리하고, 사용자가 다시 제출
-      // 버튼을 누르면 처음부터 깨끗하게 재업로드하도록 상태를 되돌린다.
-      await Promise.all([...alreadyUploaded.values()].map((key) => deleteUploadedImage(key)));
-      setImages((prev) =>
-        prev.map((img) => ({ ...img, status: "idle", objectKey: undefined, progress: 0 })),
-      );
-      setSubmitError("곡 생성에 실패했습니다. 다시 시도해주세요.");
-      setIsSubmitting(false);
-      return;
+    } catch (error) {
+      if (error instanceof WriteCommittedButUnconfirmedError) {
+        // 곡 생성 자체(RPC)는 이미 커밋됐고, 그 직후 확인 조회만 실패한 경우다 — 방금 올린
+        // R2 객체는 이미 song_images가 참조하고 있으니 정리(삭제)하면 안 된다(code review
+        // 지적, 실제로 이 분기를 놓치면 멀쩡히 생성된 곡이 깨진 이미지를 영구히 가리키게
+        // 된다). 알고 있는 songId로 그대로 진행한다.
+        songId = error.id;
+      } else {
+        // 곡 생성이 진짜로 실패하면 방금 올린 객체들이 고아로 남는다 — 정리하고, 사용자가
+        // 다시 제출 버튼을 누르면 처음부터 깨끗하게 재업로드하도록 상태를 되돌린다.
+        await Promise.all([...alreadyUploaded.values()].map((key) => deleteUploadedImage(key)));
+        setImages((prev) =>
+          prev.map((img) => ({ ...img, status: "idle", objectKey: undefined, progress: 0 })),
+        );
+        setSubmitError("곡 생성에 실패했습니다. 다시 시도해주세요.");
+        setIsSubmitting(false);
+        return;
+      }
     }
 
     try {

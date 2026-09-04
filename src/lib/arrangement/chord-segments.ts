@@ -54,7 +54,13 @@ export function extractChordSegments(song: SongTree): ChordSegment[] {
     segments.push({
       chord: event.chord,
       startBeat: event.beat,
-      endBeat: songTotalBeats, // 다음 이벤트가 확정되면 아래에서 덮어쓴다
+      // 다음 이벤트가 확정되면 아래에서 덮어쓴다 — 배열의 마지막 항목만 이 초기값이 그대로
+      // 최종 endBeat이 된다. event.beat이 songTotalBeats와 같거나 그보다 크면(한 줄의 마지막
+      // 코드가 그 줄/섹션의 끝 beat에 정확히 걸린 경우 등) endBeat=songTotalBeats<=startBeat인
+      // 0박자(또는 음수 길이) 구간이 되어 아래 filter에서 그 코드가 조용히 통째로 사라진다
+      // (code review 지적, 코드 추적으로 재현 가능함을 확인). 최소 1박자는 보장해 마지막
+      // 코드가 항상 소리 나게 한다.
+      endBeat: Math.max(songTotalBeats, event.beat + 1),
       sectionId: event.sectionId,
       sectionType: event.sectionType,
     });

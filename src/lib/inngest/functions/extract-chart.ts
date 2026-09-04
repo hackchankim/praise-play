@@ -99,7 +99,17 @@ export const extractChart = inngest.createFunction(
 
     // 텍스트 추출과 구조 추출(2회, self-consistency용)은 서로의 결과를 필요로 하지 않으므로
     // 동시에 실행한다 — 순차 실행 대비 파이프라인 지연시간을 절반 가까이 줄인다.
-    await markProgress(songId, "text_extraction", "in_progress");
+    //
+    // 진행 상태는 extraction_jobs 한 행의 stage 컬럼 하나로만 표현되는데, 두 단계를 각각
+    // 독립적으로 in_progress/completed 마킹하면 Promise.all이 끝난 뒤 "text_extraction
+    // completed"를 "structure_extraction in_progress"보다 나중에 써서 stage 인덱스가
+    // 뒤로 되돌아간다(EXTRACTION_STAGES 순서상 text_extraction이 structure_extraction보다
+    // 앞 단계라서다) — 실시간 구독 중인 클라이언트의 진행률/단계 배지가 잠깐 역행해 보인다
+    // (code review 지적, computeOverallProgress·extracting-view.tsx의 stage 인덱스 비교
+    // 로직 추적으로 재현 가능함을 확인). 두 단계는 항상 같이 시작해 같이 끝나므로, 더 뒤
+    // 단계(structure_extraction) 하나로만 진행을 보고해 역행 자체를 없앤다 — text_extraction
+    // 배지는 structure_extraction이 진행되는 순간 "완료"로 함께 넘어간다(실제로도 같은
+    // 시점에 시작·종료되므로 부정확한 표현이 아니다).
     await markProgress(songId, "structure_extraction", "in_progress");
     const [textResult, structurePrimary, structureSecondary] = await Promise.all([
       step.run("text-extraction", () => extractLyricsAndChords(images)),
@@ -108,7 +118,6 @@ export const extractChart = inngest.createFunction(
       step.run("structure-extraction-1", () => extractStructure(images)),
       step.run("structure-extraction-2", () => extractStructure(images)),
     ]);
-    await markProgress(songId, "text_extraction", "completed");
     await markProgress(songId, "structure_extraction", "completed");
 
     await markProgress(songId, "merge", "in_progress");
@@ -129,7 +138,18 @@ export const extractChart = inngest.createFunction(
         p_time_signature: validated.timeSignature,
         p_sections: validated.sections,
       });
-      if (error) throw new Error(`추출 결과 저장 실패: ${error.message}`);
+      if (!error) return;
+      // persist_extraction_result는 곡이 이미 draft 상태가 아니면(=이미 한 번 성공적으로
+      // 저장됐으면) PT409로 거부한다(migrations/20260904000002 확인). RPC 응답이 유실되는 등
+      // 일시적 네트워크 오류로 이 스텝이 재시도되면, 실제로는 이전 시도에서 이미 정상 저장이
+      // 끝났는데도 이 시점엔 "정상적인 중복 방지 충돌"을 만난다 — 이를 일반 Error로 던지면
+      // Inngest가 계속 재시도하다 매번 같은 PT409에 부딪혀 결국 재시도를 소진하고
+      // extraction_jobs를 failed로 남긴다. 사용자는 이미 추출이 끝났는데도 추출 화면에
+      // 갇히고, 재시도해도 똑같은 409만 반복된다(code review 지적, SQL 마이그레이션 추적으로
+      // 재현 가능함을 확인). 이 경우엔 "이미 저장됨"으로 보고 그냥 진행한다 — 실패로 처리하지
+      // 않는다.
+      if (error.code === "PT409") return;
+      throw new Error(`추출 결과 저장 실패: ${error.message}`);
     });
     await markProgress(songId, "validation", "completed");
 
