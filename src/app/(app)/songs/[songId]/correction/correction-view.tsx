@@ -217,6 +217,14 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
   // ===== 저장 / 임시 저장 / 이탈 =====
 
   async function performSave() {
+    // 섹션이 하나도 없는 상태로 저장되면, 이 곡이 나중에 세트리스트에 들어가 재생될 때
+    // 재생 화면이 section을 역참조하다 크래시한다(code review 지적, playback-screen.tsx의
+    // 방어 코드로 크래시 자체는 막았지만 애초에 저장을 막는 편이 낫다). 버튼도 disabled로
+    // 막아 두지만(아래 JSX), 여기서도 한 번 더 확인한다.
+    if (sections.length === 0) {
+      setSaveError("섹션이 하나도 없습니다. 최소 한 개 이상의 섹션이 필요합니다.");
+      return;
+    }
     setSaveError(null);
     setIsSaving(true);
     try {
@@ -417,7 +425,7 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
             <Button variant="outline" size="sm" onClick={tempSaveAndLeave}>
               임시 저장 후 나가기
             </Button>
-            <Button size="sm" onClick={performSave} disabled={isSaving}>
+            <Button size="sm" onClick={performSave} disabled={isSaving || sections.length === 0}>
               {isSaving ? "저장 중..." : "저장"}
             </Button>
           </div>
@@ -446,6 +454,13 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
       {saveError && (
         <p className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
           {saveError}
+        </p>
+      )}
+
+      {sections.length === 0 && (
+        <p className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+          섹션이 하나도 없어 저장할 수 없습니다. 추출이 실패했을 수 있습니다 — 곡을 다시
+          업로드해주세요.
         </p>
       )}
 

@@ -275,6 +275,18 @@ export function useLivePlayback(
     if (!engine) return;
     if (stateRef.current.isPlaying) {
       engine.pause();
+      // engine.pause()는 오디오만 멈출 뿐, schedulerRef의 setTimeout은 벽시계 기준으로 계속
+      // 흘러간다 — 일시정지 중에도 발동해버린다(code review 지적, 코드 추적으로 재현 가능함을
+      // 확인). 발동 시 (1) 구간 반복이면 engine.seekToBeat만 조용히 호출해 재생 재개 없이
+      // 위치만 되돌리므로, 나중에 재생을 누르면 원래 멈췄던 지점이 아니라 섹션 시작에서
+      // 이어진다. (2) 예약된 곡/섹션 점프(pending)면 commitJump를 forcePlay:true로 강제
+      // 호출해 사용자가 명시적으로 멈춘 오디오를 스스로 다시 재생시켜버린다. 일시정지 순간
+      // 진행 중이던 스케줄은 전부 취소하고 pending도 버린다 — "다음 마디에서 전환"이라는
+      // 의도 자체가 일시정지로 깨졌으므로 재생을 재개하면 사용자가 다시 탭해야 한다는 게
+      // 자연스럽다. 구간 반복 토글 자체(loopSection)는 유지하고, 재생 재개 시 그 시점의
+      // 실제 위치를 기준으로 다시 예약한다(아래 engine.play() 분기).
+      schedulerRef.current.cancel();
+      setState((prev) => (prev.pending ? { ...prev, pending: null } : prev));
       return;
     }
     if (!engine.isActivated) {
@@ -307,6 +319,11 @@ export function useLivePlayback(
       return;
     }
     engine.play();
+    // 일시정지 분기에서 취소해 둔 구간 반복 예약을, 재개된 지금 이 순간의 실제 위치 기준으로
+    // 다시 건다 — loopSection 자체는 일시정지 동안에도 유지되지만(위 pause 분기 참고),
+    // songIndex/loopSection/pending 중 어느 것도 바뀌지 않았으므로 loop-toggle 이펙트가
+    // 저절로 재실행되지는 않는다.
+    armLoopIfNeeded(stateRef.current.songIndex, lastSectionIndexRef.current);
   };
 
   const toggleLoop = () => {

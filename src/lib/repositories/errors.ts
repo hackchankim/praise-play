@@ -23,3 +23,21 @@ export class ValidationError extends Error {
     this.name = "ValidationError";
   }
 }
+
+/**
+ * 쓰기(RPC/트랜잭션)는 성공적으로 커밋됐는데, 그 직후 결과를 되읽는 확인 조회만 실패했을 때
+ * 던진다(예: RLS 토큰 갱신 타이밍, 일시적 네트워크 오류). 일반 Error로 던지면 호출부가 "쓰기
+ * 자체가 실패했다"와 구분하지 못해, 이미 커밋된 자원(예: 방금 만든 song_images가 참조하는 R2
+ * 객체)을 실패 시 정리 로직으로 삭제해버리는 사고로 이어진다(code review 지적, 코드 추적으로
+ * 재현 가능함을 확인 — song-repository.ts의 createWithImages). id를 실어서 호출부가 "쓰기는
+ * 성공했으니 정리하지 말고 이 id로 계속 진행하라"고 판단할 수 있게 한다.
+ */
+export class WriteCommittedButUnconfirmedError extends Error {
+  constructor(
+    public readonly id: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "WriteCommittedButUnconfirmedError";
+  }
+}

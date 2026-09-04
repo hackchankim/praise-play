@@ -19,7 +19,12 @@ import type {
   SongTree,
 } from "@/lib/song-model/types";
 import { createId } from "@/lib/repositories/mock-utils";
-import { NotFoundError, OptimisticLockError, ValidationError } from "@/lib/repositories/errors";
+import {
+  NotFoundError,
+  OptimisticLockError,
+  ValidationError,
+  WriteCommittedButUnconfirmedError,
+} from "@/lib/repositories/errors";
 import { supabaseRepositoryClient } from "@/lib/supabase/repository-client";
 import { env } from "@/lib/env";
 
@@ -284,13 +289,30 @@ export class SupabaseSongRepository implements SongRepository {
     });
     if (error) throw new Error(`곡 생성 실패: ${error.message}`);
 
-    const { data, error: fetchError } = await supabaseRepositoryClient
-      .from("songs")
-      .select()
-      .eq("id", songId)
-      .single<SongRow>();
-    if (fetchError) throw new Error(`곡 생성 직후 재조회 실패: ${fetchError.message}`);
-    return mapSong(data);
+    // 위 RPC는 이미 커밋됐다 — 여기서부터는 "방금 만든 걸 확인 삼아 되읽는" 것뿐이다. 일시적
+    // 오류(RLS 토큰 갱신 타이밍, 네트워크 순단 등)로 이 재조회만 실패해도 호출부가 "곡 생성
+    // 자체가 실패했다"고 오판하면, 이미 그 song_images 행이 참조하는 R2 객체를 정리 로직으로
+    // 지워버려 곡이 깨진 이미지를 영구히 가리키게 된다(code review 지적, 코드 추적으로 재현
+    // 가능함을 확인). 재시도로 대부분의 일시적 실패를 흡수하고, 그래도 안 되면 "생성은
+    // 됐다"는 사실을 구분할 수 있는 별도 에러로 던져 호출부가 정리 로직을 건너뛰게 한다.
+    const RETRY_DELAYS_MS = [200, 500];
+    let lastError: { message: string } | null = null;
+    for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt += 1) {
+      const { data, error: fetchError } = await supabaseRepositoryClient
+        .from("songs")
+        .select()
+        .eq("id", songId)
+        .single<SongRow>();
+      if (!fetchError) return mapSong(data);
+      lastError = fetchError;
+      if (attempt < RETRY_DELAYS_MS.length) {
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
+      }
+    }
+    throw new WriteCommittedButUnconfirmedError(
+      songId,
+      `곡 생성 직후 재조회 실패(곡 자체는 생성됨): ${lastError?.message}`,
+    );
   }
 
   async saveCorrection(
