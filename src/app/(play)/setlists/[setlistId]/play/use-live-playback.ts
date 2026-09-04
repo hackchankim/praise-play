@@ -21,8 +21,9 @@ import {
   nextBarBoundaryBeat,
   secondsUntilBeat,
 } from "@/lib/playback/section-jump";
+import type { AssetLoadEvent } from "@/lib/playback/instrument-pool";
 import { beatsPerBar } from "@/lib/song-model/time-signature";
-import type { InstrumentTrack } from "@/lib/song-model/types";
+import type { Instrument, InstrumentTrack } from "@/lib/song-model/types";
 import {
   createInitialPlaybackState,
   sectionIndexAtBeat,
@@ -32,12 +33,26 @@ import {
 
 export type ActivationStatus = "idle" | "activating" | "failed";
 
+export type AssetLoadStatus = "loading" | "done" | "failed";
+
 export interface UseLivePlaybackResult {
   state: PlaybackState;
   activationStatus: ActivationStatus;
+  /** 악기별 로딩 진행 상황(Task 024) — 사전 로딩 화면이 항목별 체크리스트를 그리는 데 쓴다. */
+  loadProgress: Partial<Record<Instrument, { status: AssetLoadStatus; percent: number }>>;
   /**
-   * 재생/일시정지 겸용. 사용자 제스처 콜백 안에서 호출해야 한다 — 처음 호출될 때(또는 이전
-   * activate 실패 후) AudioContext 활성화까지 함께 처리하고, 성공하면 처음부터 재생을 시작한다.
+   * 사전 로딩 화면이 "예배 시작" 버튼 클릭(=사용자 제스처) 콜백 안에서 호출한다(Task 024).
+   * AudioContext 활성화 + 세트리스트 전체 로드까지 끝나야 resolve한다 — 이 프라미스가 끝난
+   * 뒤에만 재생 화면으로 넘어가야 진입 직후 첫 재생에 지연이 없다. 실패하면 reject하고
+   * activationStatus가 "failed"로 남는다 — 재호출하면 세션 캐시(instrument-pool.ts) 덕에
+   * 이미 성공했던 악기는 다시 받지 않고 실패했던 것만 재시도된다. resolve 값의
+   * failedInstruments가 비어 있지 않으면 일부 악기가 끝내 로딩되지 않은 것이다.
+   */
+  preloadAndActivate: () => Promise<{ failedInstruments: Instrument[] }>;
+  /**
+   * 재생/일시정지 겸용. 사용자 제스처 콜백 안에서 호출해야 한다. preloadAndActivate로 이미
+   * 활성화된 뒤에는 그냥 재생/일시정지만 토글한다 — 아직 활성화 전이면(사전 로딩 화면을
+   * 거치지 않고 도달한 방어적 경로) 여기서도 활성화까지 함께 처리한다.
    */
   togglePlay: () => void;
   toggleLoop: () => void;
@@ -86,6 +101,9 @@ export function useLivePlayback(
 ): UseLivePlaybackResult {
   const [state, setState] = useState<PlaybackState>(createInitialPlaybackState);
   const [activationStatus, setActivationStatus] = useState<ActivationStatus>("idle");
+  const [loadProgress, setLoadProgress] = useState<
+    Partial<Record<Instrument, { status: AssetLoadStatus; percent: number }>>
+  >({});
 
   const stateRef = useRef(state);
   useEffect(() => {
@@ -194,6 +212,28 @@ export function useLivePlayback(
     }));
   };
 
+  /** engine.ts PlaybackEngineOptions.onLoadProgress — 악기별 로딩 진행 상황을 그대로 state에 반영한다. */
+  const handleLoadProgress = (event: AssetLoadEvent) => {
+    setLoadProgress((prev) => {
+      if (event.kind === "progress") {
+        const percent = event.total > 0 ? Math.round((event.loaded / event.total) * 100) : 0;
+        return { ...prev, [event.instrument]: { status: "loading", percent } };
+      }
+      const status: AssetLoadStatus = event.kind === "done" ? "done" : "failed";
+      return { ...prev, [event.instrument]: { status, percent: status === "done" ? 100 : 0 } };
+    });
+  };
+
+  /** loadQueue()에 넘길 세트리스트 전체 트랙 목록. preloadAndActivate와 togglePlay의 방어적
+   * 활성화 경로(engine.ts 참고) 둘 다 같은 구성을 쓴다. */
+  const buildQueueEntries = () =>
+    queue.map((entry, index) => ({
+      tracks: tracksByIndex[index] ?? [],
+      tempo: entry.song.tempo,
+      timeSignature: entry.song.timeSignature,
+      totalBeats: entry.song.sections.reduce((sum, sec) => sum + sec.lengthBeats, 0),
+    }));
+
   useEffect(() => {
     if (queue.length === 0) return;
     const firstEntry = queue[0];
@@ -208,6 +248,7 @@ export function useLivePlayback(
         },
         onPositionChange: handlePositionChange,
         onSongChange: handleSongChange,
+        onLoadProgress: handleLoadProgress,
         // 세트리스트 마지막 곡까지(=체인 전체) 자연히 끝났을 때만 온다 — 자연스러운 곡 간
         // 전환(위 handleSongChange)과는 별개 신호다(engine.ts PlaybackEngineOptions.onEnd 참고).
         onEnd: () => setState((prev) => ({ ...prev, ended: true })),
@@ -266,9 +307,62 @@ export function useLivePlayback(
   }, [state.pending]);
 
   /**
-   * 재생/일시정지를 겸한다. 아직 activate() 전(첫 재생, 또는 이전 activate 실패 후 재시도)이면
-   * 활성화부터 하고 성공 시 처음부터 재생한다 — "예배 시작" 버튼과 화면의 재생 버튼이 동일한
-   * togglePlay를 쓰므로 별도의 activate() 진입점을 앱 쪽에 노출할 필요가 없다.
+   * 사전 로딩 화면이 "예배 시작" 버튼 클릭(=사용자 제스처) 콜백 안에서 호출한다(Task 024).
+   * activate()가(AudioContext 확보 자체가) 실패하면 그대로 다시 던진다 — 호출부
+   * (preloading-screen.tsx)가 재시도 안내를 보여줄 수 있게 activationStatus뿐 아니라 예외
+   * 자체로도 실패를 알린다.
+   *
+   * 반환값에 실패한 악기 목록을 담아 준다 — 호출부가 이걸 보고 "재생 화면으로 자동 진행"할지
+   * "일부 악기 없이 진행할지 물어볼지" 결정한다. state.loadProgress를 직접 읽지 않는 이유:
+   * 이 함수가 반환하는 시점과 loadProgress state가 실제로 리렌더에 반영되는 시점 사이에
+   * 클로저가 오래된 값을 붙잡고 있을 수 있어서다(activate() 도중 여러 번 setState가 일어난다)
+   * — engine.loadFailures는 activate()가 끝난 바로 그 순간의 진짜 값이라 안전하다.
+   *
+   * 이미 활성화돼 있는데(engine.isActivated) 실패했던 악기가 남아 있으면(부분 실패 후 사용자가
+   * "재시도"를 다시 누른 경우) engine.activate()를 다시 부르지 않는다 — activate()의 "이미
+   * 활성화됐으면 재구성하지 않는다" 가드에 걸려 아무 일도 안 일어난다(engine.ts 참고, 실측
+   * 재현으로 확인한 버그). 대신 retryFailedInstruments()로 실패했던 악기만 다시 시도하고,
+   * 성공한 만큼 트랙에 반영되도록 loadQueue()를 다시 부른다. 실패한 악기가 이미 없으면
+   * (=완전히 성공한 뒤 재호출된 경우) 조용히 반환한다.
+   */
+  const preloadAndActivate = async (): Promise<{ failedInstruments: Instrument[] }> => {
+    const engine = engineRef.current;
+    if (!engine) return { failedInstruments: [] };
+    if (engine.isActivated) {
+      if (engine.loadFailures.length === 0) return { failedInstruments: [] };
+      setActivationStatus("activating");
+      // 재시도 대상 악기를 곧바로 "loading"으로 표시해 둔다 — 그렇지 않으면 engine의 첫
+      // onLoadProgress 이벤트가 도착하기 전까지(네트워크 왕복 시간만큼) 방금 재시도를 누른
+      // 항목이 여전히 실패(빨간 표시)로 남아 있어, "전체는 로딩 중"인데 "이 항목만 계속
+      // 실패"로 보이는 잠깐의 혼란스러운 화면이 된다(code review 지적).
+      const retryTargets = engine.loadFailures;
+      setLoadProgress((prev) => {
+        const next = { ...prev };
+        for (const instrument of retryTargets) next[instrument] = { status: "loading", percent: 0 };
+        return next;
+      });
+      await engine.retryFailedInstruments();
+      engine.loadQueue(buildQueueEntries());
+      setActivationStatus("idle");
+      return { failedInstruments: [...engine.loadFailures] };
+    }
+    setActivationStatus("activating");
+    try {
+      await engine.activate();
+    } catch (error) {
+      setActivationStatus("failed");
+      throw error;
+    }
+    setActivationStatus("idle");
+    engine.loadQueue(buildQueueEntries());
+    return { failedInstruments: [...engine.loadFailures] };
+  };
+
+  /**
+   * 재생/일시정지를 겸한다. 보통은 preloadAndActivate가 이미 활성화까지 끝내 둔 뒤 호출되지만
+   * (사전 로딩 화면 → 재생 화면 순서, Task 024), 혹시 그 경로를 거치지 않고 도달했다면(방어적
+   * 경로) 여기서도 활성화까지 함께 처리한다 — "예배 시작" 버튼과 화면의 재생 버튼이 결국 같은
+   * activate() 로직에 기대므로 별도의 진입점을 앱 쪽에 두 벌 유지할 필요가 없다.
    */
   const togglePlay = () => {
     const engine = engineRef.current;
@@ -297,13 +391,7 @@ export function useLivePlayback(
           // 세트리스트 전체를 하나의 smplr 패턴 체인으로 로드한다(Task 023) — activate() 전에는
           // this.sequencer가 없어 loadQueue()가 곡별 템포/박자만 기록해 두고 조용히 반환하므로
           // (engine.ts 참고), 실제 setPatterns()는 activate() 완료 후인 여기서 처음 실행된다.
-          const entries = queue.map((entry, index) => ({
-            tracks: tracksByIndex[index] ?? [],
-            tempo: entry.song.tempo,
-            timeSignature: entry.song.timeSignature,
-            totalBeats: entry.song.sections.reduce((sum, sec) => sum + sec.lengthBeats, 0),
-          }));
-          engine.loadQueue(entries);
+          engine.loadQueue(buildQueueEntries());
           // activate()가 진행되는 동안(또는 이전 activate 실패 후 재시도를 기다리는 동안) 사용자가
           // 다른 곡/섹션을 탭했을 수 있다 — 그 탭은 engine이 아직 활성화 전이라 jumpToSong이
           // 조용히 무시되지만(engine.ts), React state(songIndex/absoluteBeat)는 정상적으로 그
@@ -368,5 +456,14 @@ export function useLivePlayback(
     setState((prev) => ({ ...prev, pending: null }));
   };
 
-  return { state, activationStatus, togglePlay, toggleLoop, jumpTo, cancelPending };
+  return {
+    state,
+    activationStatus,
+    loadProgress,
+    preloadAndActivate,
+    togglePlay,
+    toggleLoop,
+    jumpTo,
+    cancelPending,
+  };
 }

@@ -75,26 +75,46 @@ export function PlayView({ setlistId }: PlayViewProps) {
     };
   }, [setlistId, loadRetryKey]);
 
-  const { state, activationStatus, togglePlay, toggleLoop, jumpTo, cancelPending } =
-    useLivePlayback(queue, tracksByIndex);
+  const {
+    state,
+    activationStatus,
+    loadProgress,
+    preloadAndActivate,
+    togglePlay,
+    toggleLoop,
+    jumpTo,
+    cancelPending,
+  } = useLivePlayback(queue, tracksByIndex);
 
   // 세트리스트 마지막 곡이 자연히 끝났다는 사실(state.ended)을 별도 effect로 phase에 동기화하지
   // 않는다("You Might Not Need an Effect") — 대신 렌더링 시점에 파생시킨다. Task 011 시절과
   // 동일한 이유(effect + setPhase 왕복은 타이밍이 어긋나기 쉽다)로 이 패턴을 그대로 유지한다.
   const effectivePhase = state.ended && phase === "playing" ? "ended" : phase;
 
+  /**
+   * "예배 시작"/"재시도" 버튼 클릭(=AudioContext를 여는 사용자 제스처) 콜백(Task 024).
+   * preloadAndActivate가 실제 로딩(사운드폰트 다운로드·디코딩 + 세트리스트 트랙 로드)까지
+   * 끝낸 뒤에만 재생 화면으로 넘어간다 — 그래야 진입 직후 첫 재생에 지연이 없다는 완료
+   * 기준을 만족한다. 실패한 악기가 있으면 자동으로 넘어가지 않고 preloading-screen이
+   * 재시도/이대로 진행 선택 UI를 보여준다(activationStatus/loadProgress를 보고 그린다).
+   * activate() 자체(AudioContext 확보)가 실패하면 reject되는데, activationStatus가
+   * "failed"로 이미 반영되므로 여기서는 조용히 무시한다.
+   */
   const handleStartWorship = () => {
-    // "예배 시작" 버튼 클릭이 곧 AudioContext를 여는 사용자 제스처다 — 클릭 즉시 화면을
-    // 넘기고, 활성화 진행/실패 상태는 PlaybackScreen이 activationStatus로 직접 보여준다
-    // (phase 전환을 activate() 완료까지 기다리게 하면, 실패했을 때 되돌아갈 화면이 마땅치
-    // 않아진다 — 재생 화면 자체에서 재시도할 수 있는 편이 낫다).
-    setPhase("playing");
-    togglePlay();
+    preloadAndActivate()
+      .then(({ failedInstruments }) => {
+        if (failedInstruments.length === 0) setPhase("playing");
+      })
+      .catch(() => {});
   };
 
-  // queue는 로드 시 한 번만 set되므로 이 참조는 안정적이다. 여기서 매번 새 배열을 만들어
-  // 넘기면 PreloadingScreen의 useMemo(assets)가 매 렌더마다 새로 계산되어 시뮬레이터가
-  // 재시작(진행률 0%로 리셋)돼버린다.
+  /** 일부 악기 로딩 실패를 감수하고 그대로 재생 화면으로 넘어간다 — engine은 이미 activate()된
+   * 상태라(성공한 악기만으로 Sequencer가 구성돼 있다, engine.ts 참고) 추가 작업 없이 바로
+   * 재생 가능하다. */
+  const handleProceedAnyway = () => setPhase("playing");
+
+  // queue는 로드 시 한 번만 set되므로 이 참조는 안정적이다 — 매 렌더 새 배열을 만들지 않도록
+  // useMemo로 감싼다(PreloadingScreen이 렌더마다 이 목록으로 자산 체크리스트를 다시 만든다).
   const songTitles = useMemo(() => queue.map((entry) => entry.song.title), [queue]);
 
   // (play) 라우트 그룹은 헤더/내비게이션이 없는 풀스크린 레이아웃이라(재생 화면 자체는
@@ -171,7 +191,13 @@ export function PlayView({ setlistId }: PlayViewProps) {
     return (
       <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
         {homeExitLink}
-        <PreloadingScreen songTitles={songTitles} onStart={handleStartWorship} />
+        <PreloadingScreen
+          songTitles={songTitles}
+          loadProgress={loadProgress}
+          activationStatus={activationStatus}
+          onStart={handleStartWorship}
+          onProceedAnyway={handleProceedAnyway}
+        />
       </div>
     );
   }
