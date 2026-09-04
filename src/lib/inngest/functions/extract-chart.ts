@@ -20,6 +20,7 @@ import {
   type ExtractionImage,
 } from "@/lib/anthropic/extract";
 import { mergeExtractionResults } from "@/lib/song-model/merge-extraction";
+import { applyPostProcessing } from "@/lib/song-model/apply-post-processing";
 import type { ExtractionJobStatus, ExtractionStage } from "@/lib/song-model/extraction-job";
 
 async function markProgress(
@@ -117,18 +118,21 @@ export const extractChart = inngest.createFunction(
     await markProgress(songId, "merge", "completed");
 
     await markProgress(songId, "validation", "in_progress");
+    // 코드 문법 검증(chord-validator)과 섹션 자동 추론(infer-sections)을 잇는다 — 둘 다 LLM
+    // 호출 없는 순수 함수라 재시도해도 부작용이 없다 (Task 017).
+    const validated = await step.run("validate-and-infer", () => applyPostProcessing(merged));
     await step.run("persist", async () => {
       const { error } = await supabaseServiceClient.rpc("persist_extraction_result", {
         p_song_id: songId,
-        p_key: merged.key,
-        p_tempo: merged.tempo,
-        p_time_signature: merged.timeSignature,
-        p_sections: merged.sections,
+        p_key: validated.key,
+        p_tempo: validated.tempo,
+        p_time_signature: validated.timeSignature,
+        p_sections: validated.sections,
       });
       if (error) throw new Error(`추출 결과 저장 실패: ${error.message}`);
     });
     await markProgress(songId, "validation", "completed");
 
-    return { songId, sectionCount: merged.sections.length };
+    return { songId, sectionCount: validated.sections.length };
   },
 );
