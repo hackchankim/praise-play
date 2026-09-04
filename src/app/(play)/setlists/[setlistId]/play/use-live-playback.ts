@@ -1,9 +1,13 @@
 "use client";
 
-// 실시간 예배 재생의 오디오 오케스트레이션 훅 (Task 022). play-view.tsx가 세트리스트 전체 곡의
-// SongTree+편곡 트랙을 로드해 넘겨주면, 이 훅이 PlaybackEngine 하나(세션 전체에서 재사용,
-// engine.ts의 loadTracks() 참고 — 곡마다 새 AudioContext를 만들면 매 곡 전환마다 사용자 제스처가
-// 다시 필요해진다)와 DelayedJumpScheduler로 "다음 마디 경계에서만 전환"을 구현한다.
+// 실시간 예배 재생의 오디오 오케스트레이션 훅 (Task 022, Task 023). play-view.tsx가 세트리스트
+// 전체 곡의 SongTree+편곡 트랙을 로드해 넘겨주면, 이 훅이 PlaybackEngine 하나(세션 전체에서
+// 재사용, 곡마다 새 AudioContext를 만들면 매 곡 전환마다 사용자 제스처가 다시 필요해진다)를
+// 만들고 activate() 성공 직후 engine.loadQueue()로 세트리스트 전체를 smplr의 다중 패턴 체인으로
+// 로드한다(F009 "무음 없는 다음 곡 전환") — 자연스러운 곡 전환은 그 체인이 스스로 처리하고
+// engine의 onSongChange 콜백(handleSongChange)으로만 통지받는다. 사용자가 직접 다른 곡/섹션을
+// 탭하는 수동 이동은 DelayedJumpScheduler로 "다음 마디 경계에서만 전환"을 구현한다(engine의
+// jumpToSong).
 //
 // 예약(pending)·구간 반복(loop) 둘 다 "언젠가 될 오디오 동작"을 하나의 DelayedJumpScheduler
 // 인스턴스로 공유한다 — 사용자가 다른 섹션을 탭하면 그 순간 진행 중이던 반복 예약이든 이전
@@ -53,10 +57,22 @@ export interface UseLivePlaybackResult {
  * 우리 콜백이 실행되는 경우가 생긴다 — 그 사이 100ms 위치 폴링(handlePositionChange)이 먼저
  * "자연스럽게 다음 섹션으로 넘어갔다"고 판단해버려, 원래 예약했던 점프/반복이 자연 진행에게
  * 가로채인다(실측 재현: 구간 반복이 몇 바퀴 잘 돌다가 어느 순간 조용히 다음 섹션으로 새어
- * 나갔다). 이 margin만큼 일찍 발동시켜 그 경쟁 자체를 없앤다 — ROADMAP이 명시한 "예약된 노트
- * 잔향 처리: lookahead 창(약 100~150ms)"과 같은 여유폭이다.
+ * 나갔다).
+ *
+ * Task 023(loadQueue/setPatterns 도입) 이후로는 이 margin이 하나를 더 이겨야 한다 — smplr의
+ * 다중 패턴 체인 자연 진행("patternChange")은 "end" 이벤트와 달리 정확한 경계 시각에 맞춰
+ * 스스로 setTimeout으로 지연시키지 않고, `_flush()`의 lookahead 창(기본 200ms, 50ms 간격
+ * setInterval) 안에서 경계를 감지하는 그 순간 즉시(=최대 200ms 일찍) 발동한다
+ * (node_modules/smplr 소스 `_flush()`의 `willAdvance` 분기 확인 — "end"만 자체
+ * `setTimeout(fn, endAudioTime - now)`로 정확한 시각까지 미룬다). 그래서 반복 중인 구간이 곡의
+ * 마지막 섹션(=곡 경계와 정확히 겹침)일 때, 이 margin이 smplr의 200ms lookahead보다 작으면
+ * "구간 되돌리기" 예약보다 smplr의 "다음 곡으로 자연 진행"이 먼저 발동해버려 반복이 조용히
+ * 깨진다(실측 재현: Playwright로 세트리스트 2번째 곡 후렴 — 곡 마지막 섹션 —을 반복 설정했더니
+ * 한 바퀴도 못 돌고 다음 곡, 그 다음 곡까지 새어 나가 세트리스트가 끝나버렸다. 콘솔 로그로
+ * 확인: armLoopIfNeeded가 되돌리기를 예약한 직후 handleSongChange가 먼저 발동함). smplr의 200ms
+ * lookahead를 확실히 앞서도록 여유를 둔다.
  */
-const SCHEDULE_LOOKAHEAD_MS = 120;
+const SCHEDULE_LOOKAHEAD_MS = 260;
 
 /**
  * queue/tracksByIndex는 play-view.tsx가 세트리스트 로딩 완료 시 한 번만 set하고 이후 절대
@@ -82,7 +98,11 @@ export function useLivePlayback(
   // 계산하는 sectionIndexAtBeat 결과와 비교해 "섹션이 막 바뀌었는가"를 판정하는 기준값이다.
   const lastSectionIndexRef = useRef(-1);
 
-  /** 다른 곡으로 전환(loadTracks 필요) 또는 같은 곡 안에서의 seek를 실제로 실행하고 상태를 확정한다. */
+  /**
+   * 다른 곡으로 수동 전환(jumpToSong, Task 023) 또는 같은 곡 안에서의 seek를 실제로 실행하고
+   * 상태를 확정한다. 자연 진행으로(사용자가 손대지 않아도) 다음 곡으로 넘어가는 경우는 이 함수를
+   * 거치지 않는다 — handleSongChange(engine의 onSongChange 콜백)가 별도로 처리한다.
+   */
   const commitJump = (
     songIndex: number,
     sectionIndex: number,
@@ -92,14 +112,7 @@ export function useLivePlayback(
     const engine = engineRef.current;
     const shouldPlay = forcePlay ?? stateRef.current.isPlaying;
     if (songIndex !== stateRef.current.songIndex) {
-      const entry = queue[songIndex];
-      engine?.loadTracks(
-        tracksByIndex[songIndex] ?? [],
-        entry.song.tempo,
-        entry.song.timeSignature,
-      );
-      if (shouldPlay) engine?.play(targetBeat);
-      else engine?.seekToBeat(targetBeat);
+      engine?.jumpToSong(songIndex, targetBeat, shouldPlay);
     } else {
       engine?.seekToBeat(targetBeat);
     }
@@ -150,31 +163,35 @@ export function useLivePlayback(
     setState((prev) => ({ ...prev, absoluteBeat }));
   };
 
-  const handleSongEnd = () => {
-    // pending이 있다면 그 목표로 이미 커밋됐어야 정상이라(예약된 마디 경계는 항상 섹션 끝 이내로
-    // clamp된다, jumpTo 참고) 여기 도달했다는 건 pending이 없다는 뜻이지만, 방어적으로 한 번 더
-    // 확인한다 — 있다면 그쪽 로직에 맡기고 아무것도 하지 않는다.
-    if (stateRef.current.pending) return;
-    const nextSongIndex = stateRef.current.songIndex + 1;
-    if (nextSongIndex >= queue.length) {
-      setState((prev) => ({ ...prev, ended: true }));
-      return;
-    }
-    // smplr의 "end" 이벤트는 자기 자신의 setTimeout 콜백 안에서 _emit("end") 다음 줄에
-    // _emit("statechange", "stopped")를 한 번 더 무조건 내보낸다(node_modules/smplr 소스로
-    // 확인). commitJump가 여기서 즉시 loadTracks()+play()를 부르면(=같은 Sequencer 인스턴스를
-    // "end" 콜백 안에서 재진입 변경) 다음 곡이 막 재생을 시작한 "직후"에 그 뒤이은 무조건적인
-    // "stopped" 이벤트가 뒤따라와 방금 세운 "playing" 상태를 덮어써 버린다(실측 재현: 다음 곡
-    // 전환 직후 오디오는 실제로 재생 중인데 UI만 일시정지로 보임, 이후 몇 초 만에 그 다음 곡까지
-    // 잘못 이어서 넘어감). smplr의 end 콜백이 완전히 끝난 뒤(새 매크로태스크)로 미루면 그 뒤이은
-    // 이벤트가 우리가 손대기 전에 먼저 정리되어 재진입이 사라진다.
-    setTimeout(() => {
-      // 이 한 틱을 미루는 사이(위 주석) 사용자가 직접 다른 목표로 점프를 탭했다면(pending이
-      // 새로 생겼다면) 그 명시적 선택이 "다음 곡 자동 진행"보다 우선한다 — 여기서 그냥
-      // commitJump를 강행하면 사용자가 방금 고른 목표를 조용히 덮어써버린다(code review 지적).
-      if (stateRef.current.pending) return;
-      commitJump(nextSongIndex, 0, 0, true);
-    }, 0);
+  /**
+   * engine의 onSongChange(Task 023) — loadQueue()로 로드한 패턴 체인이 smplr 자연 진행으로
+   * 다음 곡에 들어선 순간 온다. Task 022의 handleSongEnd(setTimeout 지연 + commitJump 재호출)를
+   * 대체한다 — 그때는 stop()+addTrack()+start()를 "end" 콜백 안에서 재진입 호출해야 했기 때문에
+   * smplr의 이중 statechange 이벤트 순서 문제를 피하려고 매크로태스크 지연이 필요했지만, 이제
+   * 자연 진행은 smplr 패턴 체인이 같은 Sequencer 인스턴스를 건드리지 않고 스스로 이어가므로
+   * (engine.ts의 loadQueue 참고) 그 문제 자체가 없다 — 여기서는 React state만 반영하면 된다.
+   * loopSection은 곡이 바뀌면 의미가 없어져 초기화한다(이전 곡 섹션을 반복하다 곡이 끝났다고
+   * 새 곡 첫 섹션이 저절로 반복 재생되면 놀라운 동작이다).
+   *
+   * pending도 여기서 함께 정리한다(스케줄러도 명시적으로 취소) — SCHEDULE_LOOKAHEAD_MS는 smplr의
+   * patternChange 조기 발동(위 상수 설명 참고)을 "대체로" 이기도록 잡은 여유폭일 뿐 절대적
+   * 보장이 아니다(메인 스레드가 그 여유폭보다 더 길게 멈추면 자연 진행이 먼저 발동할 수 있다).
+   * 만약 그 드문 경우가 실제로 일어나면, pending을 그대로 남겨 두었을 때 이미 자연 진행으로 넘어간
+   * "직후" pending의 커밋 타이머가 뒤늦게 발동해 사용자가 예전에 탭했던(이미 의미가 없어진)
+   * 목표로 다시 한번 강제 점프해버린다 — 방금 끊김 없이 넘어간 전환 위에 뜬금없는 재점프가
+   * 겹쳐 들리는 혼란스러운 이중 전환이 된다(code review 지적). 자연 진행이 이미 그 경계를
+   * 넘겼다면 그 시점의 pending은 항상 무효하므로, 무조건 버린다.
+   */
+  const handleSongChange = (songIndex: number) => {
+    lastSectionIndexRef.current = 0;
+    schedulerRef.current.cancel();
+    setState((prev) => ({
+      ...prev,
+      songIndex,
+      absoluteBeat: 0,
+      loopSection: false,
+      pending: null,
+    }));
   };
 
   useEffect(() => {
@@ -190,7 +207,10 @@ export function useLivePlayback(
           setState((prev) => ({ ...prev, isPlaying: transportState === "playing" }));
         },
         onPositionChange: handlePositionChange,
-        onEnd: handleSongEnd,
+        onSongChange: handleSongChange,
+        // 세트리스트 마지막 곡까지(=체인 전체) 자연히 끝났을 때만 온다 — 자연스러운 곡 간
+        // 전환(위 handleSongChange)과는 별개 신호다(engine.ts PlaybackEngineOptions.onEnd 참고).
+        onEnd: () => setState((prev) => ({ ...prev, ended: true })),
       },
     );
     engineRef.current = engine;
@@ -203,7 +223,7 @@ export function useLivePlayback(
     // queue/tracksByIndex를 deps로 써서 "빈 배열 → 로드 완료" 전환 시 정확히 한 번 실행되게
     // 한다(play-view.tsx가 로딩 중엔 []을 넘기다가 로드 완료 시 새 참조로 교체하는 게 바로 이
     // 재실행을 트리거하는 신호다). 그 이후로는 두 값이 다시 바뀌지 않는다는 계약이라(훅
-    // docstring 참고) 엔진이 두 번 만들어지지 않는다. handlePositionChange/handleSongEnd는 매
+    // docstring 참고) 엔진이 두 번 만들어지지 않는다. handlePositionChange/handleSongChange는 매
     // 렌더 새로 만들어지는 클로저라 deps에 넣으면 이 효과가 계속 재실행돼(=엔진을 계속 새로
     // 만들어) 버리므로 의도적으로 뺐다 — 이 효과가 실행되는 "그 순간"의 최신
     // queue/tracksByIndex를 이미 캡처하고 있어 문제없다.
@@ -262,22 +282,25 @@ export function useLivePlayback(
       engine.activate().then(
         () => {
           setActivationStatus("idle");
-          // activate()가 진행되는 동안(또는 이전 activate 실패 후 재시도를 기다리는 동안)
-          // 사용자가 다른 곡/섹션을 탭했을 수 있다 — 그 탭은 engine이 아직 활성화 전이라
-          // seekToBeat/loadTracks가 조용히 무시되지만(engine.ts), React state(songIndex/
-          // absoluteBeat)는 정상적으로 그 목표를 반영해 둔 상태다. 여기서 무조건 beat 0부터
-          // 재생하면 그 선택을 조용히 무시하게 된다(code review 지적, 재현 가능함을 코드로
-          // 확인) — 지금 state가 가리키는 지점부터 이어서 재생한다.
+          // 세트리스트 전체를 하나의 smplr 패턴 체인으로 로드한다(Task 023) — activate() 전에는
+          // this.sequencer가 없어 loadQueue()가 곡별 템포/박자만 기록해 두고 조용히 반환하므로
+          // (engine.ts 참고), 실제 setPatterns()는 activate() 완료 후인 여기서 처음 실행된다.
+          const entries = queue.map((entry, index) => ({
+            tracks: tracksByIndex[index] ?? [],
+            tempo: entry.song.tempo,
+            timeSignature: entry.song.timeSignature,
+            totalBeats: entry.song.sections.reduce((sum, sec) => sum + sec.lengthBeats, 0),
+          }));
+          engine.loadQueue(entries);
+          // activate()가 진행되는 동안(또는 이전 activate 실패 후 재시도를 기다리는 동안) 사용자가
+          // 다른 곡/섹션을 탭했을 수 있다 — 그 탭은 engine이 아직 활성화 전이라 jumpToSong이
+          // 조용히 무시되지만(engine.ts), React state(songIndex/absoluteBeat)는 정상적으로 그
+          // 목표를 반영해 둔 상태다. 여기서 무조건 beat 0부터 재생하면 그 선택을 조용히 무시하게
+          // 된다(code review 지적, 재현 가능함을 코드로 확인) — 지금 state가 가리키는 지점부터
+          // 이어서 재생한다. jumpToSong(songIndex=0, ...)도 chainOrder를 [0, 1, ...]로 다시
+          // 세팅할 뿐이라 songIndex===0인 일반적인 경우에도 안전하다.
           const { songIndex, absoluteBeat } = stateRef.current;
-          if (songIndex !== 0) {
-            const entry = queue[songIndex];
-            engine.loadTracks(
-              tracksByIndex[songIndex] ?? [],
-              entry.song.tempo,
-              entry.song.timeSignature,
-            );
-          }
-          engine.play(absoluteBeat);
+          engine.jumpToSong(songIndex, absoluteBeat, true);
         },
         () => setActivationStatus("failed"),
       );

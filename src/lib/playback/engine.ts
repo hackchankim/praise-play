@@ -9,7 +9,7 @@
 // 반드시 클릭 핸들러 등 사용자 제스처 콜백 "안에서" 호출해야 한다(테스트 체크리스트 "사용자
 // 제스처 없이 재생 시도 시 활성화 안내가 표시되는가").
 import { DrumMachine, Sequencer, Soundfont, SplendidGrandPiano } from "smplr";
-import type { Sequencer as SequencerInstance } from "smplr";
+import type { PatternInput, Sequencer as SequencerInstance, SequencerNote } from "smplr";
 import type { Instrument, InstrumentTrack, NoteEvent } from "@/lib/song-model/types";
 import { INSTRUMENTS } from "@/lib/song-model/types";
 import { beatsPerBar } from "@/lib/song-model/time-signature";
@@ -76,6 +76,16 @@ export interface PlaybackEngineOptions {
    */
   onEnd?: () => void;
   /**
+   * loadQueue()로 세트리스트 전체를 하나의 smplr 패턴 체인으로 로드했을 때, 자연 진행으로(사용자
+   * 조작 없이) 다음 패턴(=다음 곡)으로 넘어간 순간 호출된다(Task 023). smplr의 패턴 체인은 같은
+   * 연속 오디오 클록을 유지한 채 다음 패턴으로 넘어가므로 stop()+start() 재시작 특유의
+   * setInterval 첫 tick 스케줄링 catch-up 지연(node_modules/smplr 소스 + 실측 확인, ~50-75ms)이
+   * 없다 — 이 콜백이 "무음 없는 곡 전환"(F009)의 핵심 신호다. 사용자가 직접 다른 곡으로
+   * 점프하는 경우(jumpToSong)는 호출자가 이미 목표 songIndex를 알고 있어 이 콜백을 거치지
+   * 않는다.
+   */
+  onSongChange?: (songIndex: number) => void;
+  /**
    * 생성자에 넘긴 tracks가 쓰는 악기만이 아니라 4개 전부(피아노/기타/베이스/드럼) 로딩한다.
    * 세트리스트 여러 곡을 이어 재생하는 실시간 세션(section-jump.ts)이 loadTracks()로 곡을
    * 바꿔치기할 때, 첫 곡엔 없던 악기가 나중 곡에 등장해도 다시 activate()할 필요 없이(=사용자
@@ -86,6 +96,15 @@ export interface PlaybackEngineOptions {
 }
 
 const POSITION_POLL_MS = 100;
+
+/**
+ * handlePatternChange가 곡 자연 전환 시 위치 폴링을 잠깐 멈췄다가 재개할 때 쓰는 지연.
+ * smplr Sequencer의 기본 lookaheadMs(200, node_modules/smplr 소스 확인)보다 확실히 길어야
+ * 재개 시점에는 항상 실제 경계(restartAudioTime)를 이미 지난 뒤라 오염된 체크포인트를 다시
+ * 읽지 않는다 — use-live-playback.ts의 SCHEDULE_LOOKAHEAD_MS와 같은 이유로 같은 여유폭(260)을
+ * 쓴다.
+ */
+const POSITION_POLL_RESUME_DELAY_MS = 260;
 
 /**
  * 곡 하나(편곡 트랙 4개)를 실제로 재생하는 어댑터. 미리듣기 플레이어(preview-player.tsx, 단일
@@ -104,6 +123,8 @@ export class PlaybackEngine {
   private sequencer: SequencerInstance | null = null;
   private instruments: Partial<Record<Instrument, SmplrInstrumentInstance>> = {};
   private positionPollId: ReturnType<typeof setInterval> | null = null;
+  /** loadQueue()로 로드한 곡별 템포/박자 — patternChange 핸들러가 곡 경계에서 참조한다. */
+  private queueMeta: Array<{ tempo: number; beatsPerBar: number }> = [];
   /**
    * dispose()가 activate() 진행 중(사운드폰트 로딩 대기 등) 호출되면, 뒤늦게 이어지는 activate()의
    * 나머지 코드가 이미 정리된 필드를 다시 채워 dispose 이후에도 "활성화된" 것처럼 되살아나고
@@ -194,6 +215,9 @@ export class PlaybackEngine {
         this.options.onPositionChange?.(0);
         this.options.onEnd?.();
       });
+      sequencer.on("patternChange", (patternIndex: number) => {
+        this.handlePatternChange(patternIndex);
+      });
 
       if (this.disposed) return this.abandonAndClose(context, loadedInstruments, sequencer);
 
@@ -218,24 +242,79 @@ export class PlaybackEngine {
     void context.close();
   }
 
+  /**
+   * 트랙 목록 → smplr 트랙 입력(악기 인스턴스 + 노트 + id) 변환. addTracksToSequencer(단일 곡,
+   * addTrack 경로)와 loadQueue(세트리스트 전체, setPatterns 경로)가 공유한다 — 후자는 addTrack()을
+   * 직접 쓸 수 없어서(setPatterns() 호출 후에는 addTrack/clearTracks가 throw한다, smplr 타입
+   * 주석 확인) 같은 변환 결과를 Pattern.tracks 배열 형태 그대로 넘겨야 한다.
+   */
+  private buildTrackInputs(
+    tracks: InstrumentTrack[],
+    instruments: Partial<Record<Instrument, SmplrInstrumentInstance>>,
+  ): Array<{ instrument: SmplrInstrumentInstance; notes: SequencerNote[]; id: string }> {
+    const result: Array<{
+      instrument: SmplrInstrumentInstance;
+      notes: SequencerNote[];
+      id: string;
+    }> = [];
+    for (const track of tracks) {
+      const instrument = instruments[track.instrument];
+      if (!instrument || track.notes.length === 0) continue;
+      const pitchAlias = track.instrument === "drums" ? DRUM_PITCH_ALIAS : undefined;
+      result.push({
+        instrument,
+        notes: toSequencerNotes(track.notes, PPQ, pitchAlias, track.instrument),
+        id: track.instrument,
+      });
+    }
+    return result;
+  }
+
   /** activate()와 loadTracks() 둘 다 쓰는 "트랙 목록 → Sequencer에 addTrack" 로직. */
   private addTracksToSequencer(
     sequencer: SequencerInstance,
     tracks: InstrumentTrack[],
     instruments: Partial<Record<Instrument, SmplrInstrumentInstance>>,
   ): void {
-    for (const track of tracks) {
-      const instrument = instruments[track.instrument];
-      if (!instrument || track.notes.length === 0) continue;
-      const pitchAlias = track.instrument === "drums" ? DRUM_PITCH_ALIAS : undefined;
-      sequencer.addTrack(
-        instrument,
-        toSequencerNotes(track.notes, PPQ, pitchAlias, track.instrument),
-        {
-          id: track.instrument,
-        },
-      );
+    for (const input of this.buildTrackInputs(tracks, instruments)) {
+      sequencer.addTrack(input.instrument, input.notes, { id: input.id });
     }
+  }
+
+  /**
+   * setPatterns()로 로드한 체인이 smplr 자연 진행으로 다음 패턴(=다음 곡)에 들어선 순간 온다.
+   * bpm/timeSignature는 Sequencer 전역 속성이라(패턴별 속성이 아니다, smplr 타입 확인) 여기서
+   * 곧바로 다음 곡 값으로 갱신해야 그 곡의 노트가 올바른 템포로 스케줄된다 — 실측 확인
+   * (patternChange 핸들러 안에서 bpm을 바꿔도 다음 패턴 노트 타이밍에 즉시 정확히 반영됨).
+   *
+   * bpm setter를 여기서 호출하면(재생 중이므로) smplr의 TransportClock이 "지금 tick 위치를 새
+   * bpm으로 태깅한" 체크포인트를 즉시 주입한다(node_modules/smplr 소스의 TransportClock.set bpm
+   * 확인). 그런데 patternChange는 실제 곡 경계 시각(smplr이 두 번째 인자로 주는 restartAudioTime)
+   * 보다 최대 lookahead(기본 200ms)만큼 일찍 발동하고 — "end"와 달리 자체 setTimeout으로 정확한
+   * 시각까지 미루지 않는다 — 뒤이어 실행되는 _flush()의 seekAt(0, restartAudioTime)이 이
+   * 체크포인트를 걸러내지 못한다(그 audioTime이 아직 restartAudioTime보다 이르기 때문). 그 결과
+   * [지금, 실제 경계) 구간 동안 position을 읽으면 "이전 곡의 tick을 새 곡의 템포로 해석한"
+   * 의미 없는 값이 나온다(code review 지적, smplr 소스 추적으로 재현 가능함을 검증 — 노트
+   * 스케줄링 자체는 seekAt이 만드는 새 체크포인트를 쓰므로 영향 없다, 오직 위치 "읽기"만 오염됨).
+   * bpm을 여기서 세팅하는 것 자체는 필수다(늦추면 새 패턴의 첫 노트들이 _scheduleWindow의 같은
+   * 동기 호출 안에서 옛 템포로 스케줄돼버려 더 나쁘다) — 대신 오염 구간 동안 위치를 "읽지"
+   * 못하게 폴링을 잠깐 멈췄다가 smplr의 200ms lookahead를 확실히 넘는 지연 뒤에 재개한다.
+   * absoluteBeat는 handleSongChange가 전환과 동시에 0으로 되돌리므로, 폴링 재개까지 화면에 새
+   * 곡의 실제 위치가 조금 늦게(최대 POSITION_POLL_RESUME_DELAY_MS) 반영되는 정도는 100ms 폴링
+   * 간격 자체가 이미 갖는 지연과 다르지 않다.
+   */
+  private handlePatternChange(patternIndex: number): void {
+    const meta = this.queueMeta[patternIndex];
+    if (!meta || !this.sequencer) return;
+    this.tempoValue = meta.tempo;
+    this.beatsPerBarValue = meta.beatsPerBar;
+    this.stopPositionPolling();
+    this.sequencer.bpm = meta.tempo;
+    this.sequencer.timeSignature = meta.beatsPerBar;
+    setTimeout(() => {
+      if (this.sequencer?.state === "playing") this.startPositionPolling();
+    }, POSITION_POLL_RESUME_DELAY_MS);
+    this.options.onSongChange?.(patternIndex);
   }
 
   /**
@@ -258,6 +337,84 @@ export class PlaybackEngine {
     this.sequencer.bpm = tempo;
     this.sequencer.timeSignature = this.beatsPerBarValue;
     this.addTracksToSequencer(this.sequencer, this.tracks, this.instruments);
+  }
+
+  /**
+   * 세트리스트 전체 곡을 smplr의 다중 패턴 체인(setPatterns/chainOrder)으로 한 번에 로드한다
+   * (Task 023, F009 "무음 없는 다음 곡 전환"). loadTracks()(단일 곡 교체, addTrack 기반)와
+   * 달리, 곡 경계에서 자연 진행이 스스로 다음 패턴으로 이어져 stop()/start() 재시작 특유의
+   * setInterval 첫 tick 스케줄링 catch-up 지연(node_modules/smplr 소스 + 실측으로 확인, 냉간
+   * 시작이든 재시작이든 동일하게 ~50-75ms 발생 — 반면 패턴 체인 전환은 실측상 오차 1ms 이내로
+   * 완전히 이음매 없음)이 전혀 없다.
+   *
+   * setPatterns() 호출 이후로는 addTrack()/clearTracks()가 throw하므로(smplr 타입 주석 확인)
+   * 이 메서드를 호출한 엔진 인스턴스에는 다시 loadTracks()를 쓸 수 없다 — 실시간 세션
+   * (use-live-playback.ts) 전용이고, 미리듣기 플레이어(단일 곡, loadTracks 사용)와는 별개
+   * 경로다.
+   *
+   * activate() 이전(this.sequencer가 아직 없음)에 호출되면 곡별 템포/박자만 기록해 두고 조용히
+   * 반환한다 — activate() 완료 뒤 다시 호출해야 실제 setPatterns()가 실행된다
+   * (use-live-playback.ts가 activate() 성공 콜백에서 호출).
+   */
+  loadQueue(
+    entries: Array<{
+      tracks: InstrumentTrack[];
+      tempo: number;
+      timeSignature: string;
+      /** 곡 전체(모든 섹션 합산) 길이 — 패턴의 loopEnd로 쓰인다(마지막 노트 이후의 여백 마디도
+       * 포함해 섹션 정의 기준 길이를 그대로 존중한다, playback-state.ts의 songDurationSeconds와
+       * 같은 계산). */
+      totalBeats: number;
+    }>,
+  ): void {
+    this.queueMeta = entries.map((entry) => ({
+      tempo: entry.tempo,
+      beatsPerBar: beatsPerBar(entry.timeSignature),
+    }));
+    if (entries.length > 0) {
+      this.tempoValue = entries[0].tempo;
+      this.beatsPerBarValue = this.queueMeta[0].beatsPerBar;
+    }
+    if (!this.sequencer) return;
+
+    const patterns: PatternInput[] = entries.map((entry) => ({
+      tracks: this.buildTrackInputs(entry.tracks, this.instruments),
+      loopEnd: beatsToTicks(entry.totalBeats, PPQ),
+    }));
+    this.sequencer.setPatterns(patterns);
+    this.sequencer.bpm = this.tempoValue;
+    this.sequencer.timeSignature = this.beatsPerBarValue;
+  }
+
+  /**
+   * loadQueue()로 로드한 체인에서 임의의 곡(songIndex)으로 수동 점프한다(Task 023) — 사용자가
+   * 가사 피드에서 다른 곡의 줄을 탭하는 경우 등. smplr 패턴 체인은 순차 진행만 자동으로
+   * 하고(_chainIndex는 private, 임의 패턴으로 바로 점프하는 공개 API가 없다 — node_modules/smplr
+   * 소스 확인) chainOrder를 목표 곡부터 시작하도록 다시 잘라 낸 뒤 stop()+start()로 그 체인의
+   * 처음(=목표 곡)부터 다시 시작한다. start()는 항상 chainOrder[0]부터 시작하며 그 순간
+   * _chainIndex를 0으로 리셋하므로(smplr 소스 확인) 이 재구성이 필요하다.
+   *
+   * stop()+start()를 쓰므로 loadQueue()가 없애는 setInterval 첫 tick 지연이 여기서는 다시
+   * 생긴다 — 하지만 이건 사용자가 직접 탭한 불연속 동작이라(음악이 자연스럽게 흘러가는 도중이
+   * 아니다) 체감상 문제되지 않는다. ROADMAP이 요구하는 "무음 없는 전환"은 자연 진행(다음 곡으로
+   * 자동으로 넘어가는) 케이스만을 가리킨다.
+   *
+   * shouldPlay가 false면(탭한 시점에 일시정지 상태였다면) start() 직후 바로 pause()한다 —
+   * start()~pause() 사이에는 setInterval 콜백이 아직 한 번도 돌지 않으므로(동기 호출 구간) 실제
+   * 소리가 나기 전에 멈춰 오디오 아티팩트가 없다(실측 확인).
+   */
+  jumpToSong(songIndex: number, atBeat: number, shouldPlay: boolean): void {
+    if (!this.sequencer) return;
+    const meta = this.queueMeta[songIndex];
+    if (!meta) return;
+    this.sequencer.chainOrder = this.queueMeta.map((_, index) => index).slice(songIndex);
+    this.sequencer.stop();
+    this.tempoValue = meta.tempo;
+    this.beatsPerBarValue = meta.beatsPerBar;
+    this.sequencer.bpm = meta.tempo;
+    this.sequencer.timeSignature = meta.beatsPerBar;
+    this.sequencer.start(beatsToTicks(atBeat, PPQ));
+    if (!shouldPlay) this.sequencer.pause();
   }
 
   /** atBeat을 주면 그 위치부터 시작한다(곡 전환 시 목표 섹션의 시작 beat 등). 생략하면 smplr
