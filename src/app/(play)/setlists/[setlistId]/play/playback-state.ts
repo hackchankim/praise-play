@@ -5,6 +5,7 @@
 
 import type { Section, SectionWithLines, SongTree } from "@/lib/song-model/types";
 import { SECTION_LABEL } from "@/components/domain/section-badge";
+import { beatsPerBar } from "@/lib/song-model/time-signature";
 
 export interface QueueEntry {
   song: SongTree;
@@ -45,12 +46,6 @@ export function createInitialPlaybackState(): PlaybackState {
     pending: null,
     ended: false,
   };
-}
-
-/** "4/4", "6/8" 같은 박자표 문자열에서 한 마디당 beat 수를 뽑아낸다. 파싱 실패 시 4/4로 취급 */
-export function beatsPerBar(timeSignature: string): number {
-  const numerator = Number.parseInt(timeSignature.split("/")[0] ?? "4", 10);
-  return Number.isFinite(numerator) && numerator > 0 ? numerator : 4;
 }
 
 export function barIndexOf(elapsedBeats: number, timeSignature: string): number {
