@@ -222,7 +222,12 @@ export function ArrangementView({ songId }: ArrangementViewProps) {
             })}
           </div>
 
-          <PreviewPlayer tracks={arrangement.instrumentTracks} tempo={song.tempo} />
+          <PreviewPlayer
+            key={arrangement.id}
+            tracks={arrangement.instrumentTracks}
+            tempo={song.tempo}
+            timeSignature={song.timeSignature}
+          />
 
           <div className="flex flex-wrap gap-2 pt-1">
             <Button onClick={() => setAddDialogOpen(true)}>세트리스트에 추가</Button>
