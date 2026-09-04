@@ -68,18 +68,36 @@ export interface PlaybackEngineOptions {
   onTransportStateChange?: (state: PlaybackTransportState) => void;
   /** 재생 중 대략 100ms 간격으로 현재 위치(절대 beat, 곡 시작 기준)를 알려준다. */
   onPositionChange?: (beat: number) => void;
+  /**
+   * 루프가 아닌 트랙이 끝까지 자연 재생돼 멈췄을 때 한 번 불린다. onPositionChange(0)과
+   * 구분해서 둔다 — seekToBeat(0)(곡 시작으로 명시적 이동)도 onPositionChange(0)을 부르는데,
+   * "자연히 끝났다"와 "0으로 이동했다"는 실시간 세션(section-jump.ts)이 다음 곡으로 자동
+   * 진행할지 결정하는 서로 다른 신호라 하나로 겹치면 안 된다.
+   */
+  onEnd?: () => void;
+  /**
+   * 생성자에 넘긴 tracks가 쓰는 악기만이 아니라 4개 전부(피아노/기타/베이스/드럼) 로딩한다.
+   * 세트리스트 여러 곡을 이어 재생하는 실시간 세션(section-jump.ts)이 loadTracks()로 곡을
+   * 바꿔치기할 때, 첫 곡엔 없던 악기가 나중 곡에 등장해도 다시 activate()할 필요 없이(=사용자
+   * 제스처를 또 요구하지 않고) 바로 쓸 수 있어야 하므로 켠다. 미리듣기 플레이어(단일 곡, Task
+   * 021)는 필요한 악기만 받으면 되니 기본값 false.
+   */
+  preloadAllInstruments?: boolean;
 }
 
 const POSITION_POLL_MS = 100;
 
 /**
- * 곡 하나(편곡 트랙 4개)를 실제로 재생하는 어댑터. 미리듣기 플레이어(preview-player.tsx)가
- * 유일한 소비처다 — 실시간 예배 재생 화면(Task 022)은 여기에 마디 경계 지연 점프를 얹은
- * 별도 래퍼를 쓴다(section-jump.ts, 아직 미구현).
+ * 곡 하나(편곡 트랙 4개)를 실제로 재생하는 어댑터. 미리듣기 플레이어(preview-player.tsx, 단일
+ * 곡)와 실시간 예배 재생 화면(section-jump.ts를 통해 여러 곡을 이어 재생, Task 022) 둘 다
+ * 이 클래스를 쓴다. 후자는 activate()를 한 번만 호출(=사용자 제스처도 한 번만 필요)하고, 곡이
+ * 바뀔 때마다 loadTracks()로 같은 AudioContext/로드된 악기 인스턴스를 재사용하면서 Sequencer의
+ * 트랙만 통째로 교체한다 — 곡마다 새 AudioContext를 만들면 매 곡 전환마다 제스처가 다시
+ * 필요해지기 때문이다.
  */
 export class PlaybackEngine {
-  private readonly tracks: InstrumentTrack[];
-  private readonly beatsPerBarValue: number;
+  private tracks: InstrumentTrack[];
+  private beatsPerBarValue: number;
   private tempoValue: number;
 
   private context: AudioContext | null = null;
@@ -143,9 +161,11 @@ export class PlaybackEngine {
       if (this.disposed) return this.abandonAndClose(context, loadedInstruments);
       if (context.state !== "running") throw new AudioActivationError();
 
-      const neededInstruments = INSTRUMENTS.filter((instrument) =>
-        this.tracks.some((track) => track.instrument === instrument && track.notes.length > 0),
-      );
+      const neededInstruments = this.options.preloadAllInstruments
+        ? INSTRUMENTS
+        : INSTRUMENTS.filter((instrument) =>
+            this.tracks.some((track) => track.instrument === instrument && track.notes.length > 0),
+          );
       const loaded = await Promise.all(
         neededInstruments.map(async (instrument) => {
           const instance = createInstrument(instrument, context);
@@ -162,18 +182,7 @@ export class PlaybackEngine {
         timeSignature: this.beatsPerBarValue,
         loop: false,
       });
-      for (const track of this.tracks) {
-        const instrument = loaded.find(([name]) => name === track.instrument)?.[1];
-        if (!instrument || track.notes.length === 0) continue;
-        const pitchAlias = track.instrument === "drums" ? DRUM_PITCH_ALIAS : undefined;
-        sequencer.addTrack(
-          instrument,
-          toSequencerNotes(track.notes, PPQ, pitchAlias, track.instrument),
-          {
-            id: track.instrument,
-          },
-        );
-      }
+      this.addTracksToSequencer(sequencer, this.tracks, Object.fromEntries(loaded));
       sequencer.on("statechange", (state: PlaybackTransportState) => {
         this.options.onTransportStateChange?.(state);
         if (state === "playing") this.startPositionPolling();
@@ -181,7 +190,10 @@ export class PlaybackEngine {
       });
       // 자연스럽게 끝까지 재생되면(루프가 아니므로) statechange만으로는 위치가 0으로 돌아오지
       // 않는다 — 마지막으로 폴링된, 끝 근처의 값에 진행바가 멈춰 남는다(code review 지적).
-      sequencer.on("end", () => this.options.onPositionChange?.(0));
+      sequencer.on("end", () => {
+        this.options.onPositionChange?.(0);
+        this.options.onEnd?.();
+      });
 
       if (this.disposed) return this.abandonAndClose(context, loadedInstruments, sequencer);
 
@@ -206,8 +218,53 @@ export class PlaybackEngine {
     void context.close();
   }
 
-  play(): void {
-    this.sequencer?.start();
+  /** activate()와 loadTracks() 둘 다 쓰는 "트랙 목록 → Sequencer에 addTrack" 로직. */
+  private addTracksToSequencer(
+    sequencer: SequencerInstance,
+    tracks: InstrumentTrack[],
+    instruments: Partial<Record<Instrument, SmplrInstrumentInstance>>,
+  ): void {
+    for (const track of tracks) {
+      const instrument = instruments[track.instrument];
+      if (!instrument || track.notes.length === 0) continue;
+      const pitchAlias = track.instrument === "drums" ? DRUM_PITCH_ALIAS : undefined;
+      sequencer.addTrack(
+        instrument,
+        toSequencerNotes(track.notes, PPQ, pitchAlias, track.instrument),
+        {
+          id: track.instrument,
+        },
+      );
+    }
+  }
+
+  /**
+   * 이미 activate()된 엔진에 새 곡의 트랙을 얹는다 — AudioContext와 로드된 악기 인스턴스는
+   * 그대로 재사용하고(다시 다운로드하지 않음) Sequencer의 트랙만 통째로 교체한다. 세트리스트
+   * 여러 곡을 이어 재생하는 실시간 세션(section-jump.ts)이 곡 전환마다 쓴다 — activate()를
+   * 다시 부르면 매 곡 전환마다 사용자 제스처가 또 필요해지므로 이 메서드가 필수다.
+   *
+   * 아직 activate() 전(this.sequencer가 없음)이면 tracks/tempo/timeSignature만 갱신해 두고
+   * 조용히 반환한다 — 다음 activate() 호출이 이 값들을 그대로 쓴다.
+   */
+  loadTracks(tracks: InstrumentTrack[], tempo: number, timeSignature: string): void {
+    this.tracks = tracks;
+    this.tempoValue = tempo;
+    this.beatsPerBarValue = beatsPerBar(timeSignature);
+    if (!this.sequencer) return;
+
+    this.sequencer.stop();
+    this.sequencer.clearTracks();
+    this.sequencer.bpm = tempo;
+    this.sequencer.timeSignature = this.beatsPerBarValue;
+    this.addTracksToSequencer(this.sequencer, this.tracks, this.instruments);
+  }
+
+  /** atBeat을 주면 그 위치부터 시작한다(곡 전환 시 목표 섹션의 시작 beat 등). 생략하면 smplr
+   * 기본 동작(처음부터, 또는 일시정지에서였다면 이어서) 그대로다. */
+  play(atBeat?: number): void {
+    if (atBeat !== undefined) this.sequencer?.start(beatsToTicks(atBeat, PPQ));
+    else this.sequencer?.start();
   }
 
   pause(): void {
@@ -239,6 +296,16 @@ export class PlaybackEngine {
 
   get transportState(): PlaybackTransportState {
     return this.sequencer?.state ?? "stopped";
+  }
+
+  /**
+   * 지금 이 순간의 정확한 위치(절대 beat). onPositionChange 콜백은 최대 100ms 지연될 수 있어,
+   * "지금 위치 기준으로 다음 마디 경계를 계산"해야 하는 지연 점프 스케줄링(section-jump.ts)은
+   * 폴링된 값 대신 이 게터로 직접 조회한 값을 써야 한다.
+   */
+  get positionBeat(): number {
+    if (!this.sequencer) return 0;
+    return positionStringToBeats(this.sequencer.position, PPQ, this.beatsPerBarValue);
   }
 
   private startPositionPolling(): void {

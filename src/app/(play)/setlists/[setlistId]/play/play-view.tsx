@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Home } from "lucide-react";
@@ -12,18 +12,14 @@ import { cn } from "@/lib/utils";
 import { routes } from "@/lib/routes";
 import { setlistRepository } from "@/lib/repositories/setlist-repository";
 import { songRepository } from "@/lib/repositories/song-repository";
-import {
-  createInitialPlaybackState,
-  tick,
-  type PlaybackState,
-  type QueueEntry,
-} from "./playback-state";
+import { arrangementRepository } from "@/lib/repositories/arrangement-repository";
+import type { InstrumentTrack } from "@/lib/song-model/types";
+import { type QueueEntry } from "./playback-state";
+import { useLivePlayback } from "./use-live-playback";
 import { PreloadingScreen } from "./preloading-screen";
 import { PlaybackScreen } from "./playback-screen";
 
 type Phase = "loading" | "not_found" | "error" | "empty" | "preloading" | "playing" | "ended";
-
-const TICK_MS = 100;
 
 interface PlayViewProps {
   setlistId: string;
@@ -34,7 +30,7 @@ export function PlayView({ setlistId }: PlayViewProps) {
 
   const [phase, setPhase] = useState<Phase>("loading");
   const [queue, setQueue] = useState<QueueEntry[]>([]);
-  const [state, setState] = useState<PlaybackState>(createInitialPlaybackState);
+  const [tracksByIndex, setTracksByIndex] = useState<InstrumentTrack[][]>([]);
   const [loadRetryKey, setLoadRetryKey] = useState(0);
 
   useEffect(() => {
@@ -52,9 +48,14 @@ export function PlayView({ setlistId }: PlayViewProps) {
           setPhase("empty");
           return;
         }
-        const trees = await Promise.all(items.map((item) => songRepository.getTree(item.songId)));
+        // 곡 트리와 편곡 트랙(악기별 노트 이벤트)을 함께 읽어야 실제 오디오 재생이 가능하다
+        // (Task 022) — Task 011까지는 가사 표시만 필요해 곡 트리만 읽었다.
+        const [trees, arrangements] = await Promise.all([
+          Promise.all(items.map((item) => songRepository.getTree(item.songId))),
+          Promise.all(items.map((item) => arrangementRepository.getById(item.arrangementId))),
+        ]);
         if (cancelled) return;
-        if (trees.some((tree) => !tree)) {
+        if (trees.some((tree) => !tree) || arrangements.some((arrangement) => !arrangement)) {
           setPhase("error");
           return;
         }
@@ -63,6 +64,7 @@ export function PlayView({ setlistId }: PlayViewProps) {
           arrangementId: item.arrangementId,
         }));
         setQueue(nextQueue);
+        setTracksByIndex(arrangements.map((arrangement) => arrangement!.instrumentTracks));
         setPhase("preloading");
       })
       .catch(() => {
@@ -73,67 +75,22 @@ export function PlayView({ setlistId }: PlayViewProps) {
     };
   }, [setlistId, loadRetryKey]);
 
-  // ===== 더미 마디 시계 =====
-  // queue는 로드 후 거의 바뀌지 않아 ref로 충분하지만, state는 100ms마다 바뀌므로 ref로
-  // 미러링하지 않는다 — 대신 모든 소비처(tick 인터벌, 버튼 핸들러의 goTo)가 setState 함수형
-  // 업데이터의 prev를 직접 읽어 항상 React가 들고 있는 진짜 최신 값을 쓰게 한다.
-  const queueRef = useRef(queue);
-  useEffect(() => {
-    queueRef.current = queue;
-  }, [queue]);
-
-  useEffect(() => {
-    if (phase !== "playing") return;
-    const interval = setInterval(() => {
-      setState((prev) => {
-        if (!prev.isPlaying) return prev;
-        const song = queueRef.current[prev.songIndex].song;
-        const deltaBeats = (song.tempo / 60) * (TICK_MS / 1000);
-        const next = tick(prev, queueRef.current, deltaBeats);
-        // effectivePhase가 렌더 시점에 "ended"로 파생되는 동안 phase 자체는 계속 "playing"에
-        // 머물러 있어([phase] 의존성이 다시 바뀌지 않아) 이 effect의 클린업이 실행되지 않는다.
-        // 세트리스트가 끝나는 순간 타이머 스스로 멈춰야 한다.
-        if (next.ended) clearInterval(interval);
-        return next;
-      });
-    }, TICK_MS);
-    return () => clearInterval(interval);
-  }, [phase]);
+  const { state, activationStatus, togglePlay, toggleLoop, jumpTo, cancelPending } =
+    useLivePlayback(queue, tracksByIndex);
 
   // 세트리스트 마지막 곡이 자연히 끝났다는 사실(state.ended)을 별도 effect로 phase에 동기화하지
-  // 않는다("You Might Not Need an Effect") — 대신 렌더링 시점에 파생시킨다. effect + setPhase
-  // 왕복에 기대면 그 타이밍이 tick 인터벌의 setState 업데이터 실행과 정확히 맞물린다는 보장이
-  // 약해, 실제로 "예배가 끝났습니다" 화면 전환이 간헐적으로 누락되는 버그가 있었다.
+  // 않는다("You Might Not Need an Effect") — 대신 렌더링 시점에 파생시킨다. Task 011 시절과
+  // 동일한 이유(effect + setPhase 왕복은 타이밍이 어긋나기 쉽다)로 이 패턴을 그대로 유지한다.
   const effectivePhase = state.ended && phase === "playing" ? "ended" : phase;
 
-  const handleTogglePlay = useCallback(() => {
-    setState((prev) => ({ ...prev, isPlaying: !prev.isPlaying }));
-  }, []);
-
-  const handleToggleLoop = useCallback(() => {
-    setState((prev) => ({ ...prev, loopSection: !prev.loopSection }));
-  }, []);
-
-  const handleCancelPending = useCallback(() => {
-    setState((prev) => ({ ...prev, pending: null }));
-  }, []);
-
-  /**
-   * 재생 중이 아니면 대기할 오디오가 없으므로 즉시 이동하고, 재생 중이면 다음 마디까지 예약한다.
-   * 가사(같은 곡이든 다른 곡이든)를 탭하는 것이 유일한 이동 수단이라, 목표 지점은 항상 호출부가
-   * 직접 넘겨준다. 지금 재생 중인 섹션(화면에서 가장 크고 눈에 띄는, 그래서 가장 실수로 누르기
-   * 쉬운 지점)을 다시 탭한 경우는 무시한다 — 그렇지 않으면 다음 마디에서 같은 섹션 처음으로
-   * 조용히 재시작돼버린다.
-   */
-  const handleJumpTo = useCallback((songIndex: number, sectionIndex: number) => {
-    setState((prev) => {
-      if (songIndex === prev.songIndex && sectionIndex === prev.sectionIndex) return prev;
-      if (!prev.isPlaying) {
-        return { ...prev, songIndex, sectionIndex, elapsedBeats: 0, pending: null };
-      }
-      return { ...prev, pending: { songIndex, sectionIndex } };
-    });
-  }, []);
+  const handleStartWorship = () => {
+    // "예배 시작" 버튼 클릭이 곧 AudioContext를 여는 사용자 제스처다 — 클릭 즉시 화면을
+    // 넘기고, 활성화 진행/실패 상태는 PlaybackScreen이 activationStatus로 직접 보여준다
+    // (phase 전환을 activate() 완료까지 기다리게 하면, 실패했을 때 되돌아갈 화면이 마땅치
+    // 않아진다 — 재생 화면 자체에서 재시도할 수 있는 편이 낫다).
+    setPhase("playing");
+    togglePlay();
+  };
 
   // queue는 로드 시 한 번만 set되므로 이 참조는 안정적이다. 여기서 매번 새 배열을 만들어
   // 넘기면 PreloadingScreen의 useMemo(assets)가 매 렌더마다 새로 계산되어 시뮬레이터가
@@ -214,7 +171,7 @@ export function PlayView({ setlistId }: PlayViewProps) {
     return (
       <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
         {homeExitLink}
-        <PreloadingScreen songTitles={songTitles} onComplete={() => setPhase("playing")} />
+        <PreloadingScreen songTitles={songTitles} onStart={handleStartWorship} />
       </div>
     );
   }
@@ -236,10 +193,11 @@ export function PlayView({ setlistId }: PlayViewProps) {
     <PlaybackScreen
       queue={queue}
       state={state}
-      onTogglePlay={handleTogglePlay}
-      onToggleLoop={handleToggleLoop}
-      onJumpTo={handleJumpTo}
-      onCancelPending={handleCancelPending}
+      activationStatus={activationStatus}
+      onTogglePlay={togglePlay}
+      onToggleLoop={toggleLoop}
+      onJumpTo={jumpTo}
+      onCancelPending={cancelPending}
     />
   );
 }
