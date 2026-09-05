@@ -79,6 +79,17 @@ function updateSectionAt(
   return sections.map((section) => (section.clientKey === clientKey ? updater(section) : section));
 }
 
+/**
+ * 방금 추출된 원본 그대로(줄 하나가 여러 마디를 통째로 담은 상태)는 화면에 그대로 보여주기엔
+ * 유용하지 않다 — "재구성" 버튼을 눌렀을 때와 같은 1마디 카드 상태를 기본값으로 삼는다.
+ * 최초 로드와 "원본으로 초기화" 둘 다 같은 원본 데이터에서 시작하므로 같은 기본값을 써야 한다.
+ * measuresPerLine은 항상 1로 고정한다 — "줄당 마디 수" 토글은 저장되지 않는 순수 UI 상태라
+ * (measuresPerLine 참고) 그 값을 여기 반영하면 두 진입점이 서로 다른 기본값을 낼 수 있다.
+ */
+function defaultSections(song: GetSongTreeResponse["song"]): EditableSection[] {
+  return reorganizeIntoMeasures(toEditableSections(song), song.timeSignature, 1);
+}
+
 export function CorrectionView({ songId }: CorrectionViewProps) {
   const router = useRouter();
 
@@ -145,8 +156,13 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
           setSections(draft.sections);
           setDraftBannerVisible(true);
         } else {
+          // draftCorrection이 없다는 뜻은 사용자가 아직 이 곡을 한 번도 교정 편집하지
+          // 않았다는 것이므로, 방금 추출된 원본을 기본값(reorganizeIntoMeasures) 그대로
+          // 보여준다. 반대로 draftCorrection이 있으면(위 branch) 사용자가 이미 직접
+          // 재구성/편집한 상태일 수 있어(예: 2마디를 골랐거나 카드를 더 잘게 손봤을 수
+          // 있다) defaultSections를 쓰지 않고 저장된 그대로 복원한다.
           setSongMeta(toEditableSong(result.song));
-          setSections(toEditableSections(result.song));
+          setSections(defaultSections(result.song));
         }
         setStatus("ready");
       })
@@ -446,7 +462,7 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
             onClick={() => {
               void deleteDraftCorrection(songId);
               setSongMeta(toEditableSong(tree.song));
-              setSections(toEditableSections(tree.song));
+              setSections(defaultSections(tree.song));
               setDraftBannerVisible(false);
               setDirty(false);
             }}
