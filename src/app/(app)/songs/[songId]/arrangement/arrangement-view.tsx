@@ -183,7 +183,7 @@ export function ArrangementView({ songId }: ArrangementViewProps) {
                   })}
                 </div>
                 <p className="border-t pt-2 text-[11px] text-muted-foreground">
-                  {meta.sectionDensity}
+                  {meta.voicingNote}
                 </p>
               </CardContent>
             </Card>

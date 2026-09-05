@@ -1,104 +1,28 @@
-// 다악기 편곡 생성 엔진 코어 (Task 019) — 이 제품의 핵심 IP. 확정된 코드 진행(sections/lines/
-// chordEvents)과 장르 프리셋을 받아 피아노/기타/베이스/드럼 4트랙의 beat 정렬 노트 이벤트를
+// 다악기 편곡 생성 엔진 코어 (Task 019, 이후 편곡 단순화 리팩터). 확정된 코드 진행(sections/
+// lines/chordEvents)과 장르 프리셋을 받아 피아노/기타/베이스/드럼 4트랙의 beat 정렬 노트 이벤트를
 // 만든다. 순수 함수라 유닛 테스트가 직접 이 모듈을 불러오므로 여기 자체에는 "server-only"
 // 가드를 두지 않는다(그 패키지는 Node 환경에서 그냥 무조건 throw한다 — Next.js가 번들링 시
 // "react-server" 조건으로 치환해주는 걸 전제하는데 Vitest는 그 조건을 모른다). 대신 이 엔진을
 // 실제로 호출하는 유일한 지점인 persist-arrangement.ts에 가드를 둔다 — 클라이언트 컴포넌트가
 // 이 파일을 직접 참조할 일이 없다면(그런 일이 없어야 한다) 이 알고리즘은 서버 번들에만 존재한다.
+//
+// 리듬 패턴은 장르 프리셋·섹션 타입과 무관하게 항상 같다(코드 패드 + 심플한 비트) — 프리셋은
+// VOICING_OPTIONS를 통해 화성 보이싱만 다르게 한다. 예전에는 여기서 (프리셋, 섹션 타입)별로
+// 스타일을 분기했지만, 실제 연주를 흉내 내려는 분기가 오히려 부자연스럽게 들려 전부 제거했다.
 import type { GenrePreset, Instrument, NoteEvent, SongTree } from "@/lib/song-model/types";
 import { INSTRUMENTS } from "@/lib/song-model/types";
-import { extractChordSegments, type ChordSegment } from "@/lib/arrangement/chord-segments";
+import { extractChordSegments } from "@/lib/arrangement/chord-segments";
 import {
   buildVoicingSequence,
   bassPitchClassOf,
   type VoicedChord,
 } from "@/lib/arrangement/voicing";
-import { VOICING_OPTIONS, stylesFor } from "@/lib/arrangement/presets";
+import { VOICING_OPTIONS } from "@/lib/arrangement/presets";
 import * as gen from "@/lib/arrangement/instruments";
 
 export interface GeneratedTrack {
   instrument: Instrument;
   notes: NoteEvent[];
-}
-
-function groupBy<T, K>(items: T[], keyOf: (item: T) => K): Map<K, T[]> {
-  const map = new Map<K, T[]>();
-  for (const item of items) {
-    const key = keyOf(item);
-    const list = map.get(key);
-    if (list) list.push(item);
-    else map.set(key, [item]);
-  }
-  return map;
-}
-
-function generatePiano(
-  segments: ChordSegment[],
-  voicedByBeat: Map<number, VoicedChord>,
-  preset: GenrePreset,
-  timeSignature: string,
-): NoteEvent[] {
-  const groups = groupBy(segments, (s) => stylesFor(preset, s.sectionType).piano);
-  const notes: NoteEvent[] = [];
-  for (const [style, segs] of groups) {
-    if (style === "comping") notes.push(...gen.pianoComping(segs, voicedByBeat, timeSignature));
-    else if (style === "arpeggio") notes.push(...gen.pianoArpeggio(segs, voicedByBeat));
-    else if (style === "block") notes.push(...gen.pianoBlock(segs, voicedByBeat));
-    else notes.push(...gen.pianoSparse(segs, voicedByBeat));
-  }
-  return notes;
-}
-
-function generateGuitar(
-  segments: ChordSegment[],
-  voicedByBeat: Map<number, VoicedChord>,
-  preset: GenrePreset,
-  timeSignature: string,
-): NoteEvent[] {
-  const groups = groupBy(segments, (s) => stylesFor(preset, s.sectionType).guitar);
-  const notes: NoteEvent[] = [];
-  for (const [style, segs] of groups) {
-    if (style === "strum") notes.push(...gen.guitarStrum(segs, voicedByBeat, timeSignature));
-    else if (style === "fingerpick") notes.push(...gen.guitarFingerpick(segs, voicedByBeat));
-    else notes.push(...gen.guitarSparse(segs, voicedByBeat));
-  }
-  return notes;
-}
-
-function generateBass(
-  segments: ChordSegment[],
-  preset: GenrePreset,
-  timeSignature: string,
-): NoteEvent[] {
-  const bassOf = (segment: ChordSegment) => bassPitchClassOf(segment.chord);
-  const groups = groupBy(segments, (s) => stylesFor(preset, s.sectionType).bass);
-  const notes: NoteEvent[] = [];
-  for (const [style, segs] of groups) {
-    if (style === "walking") notes.push(...gen.bassWalking(segs, timeSignature, bassOf));
-    else if (style === "longtone") notes.push(...gen.bassLongTone(segs, bassOf));
-    else if (style === "downbeat") notes.push(...gen.bassDownbeat(segs, timeSignature, bassOf));
-    else notes.push(...gen.bassSparse(segs, bassOf));
-  }
-  return notes;
-}
-
-function generateDrums(
-  segments: ChordSegment[],
-  preset: GenrePreset,
-  timeSignature: string,
-): NoteEvent[] {
-  const bpb = gen.beatsPerBar(timeSignature);
-  const groups = groupBy(segments, (s) => stylesFor(preset, s.sectionType).drums);
-  const notes: NoteEvent[] = [];
-  for (const [style, segs] of groups) {
-    if (style === "off") continue;
-    for (const segment of segs) {
-      const barStarts = gen.barStartsWithin(segment, bpb);
-      if (style === "active") notes.push(...gen.drumsActive(barStarts, segment.endBeat, bpb));
-      else notes.push(...gen.drumsMinimal(barStarts, segment.endBeat));
-    }
-  }
-  return notes;
 }
 
 /**
@@ -123,18 +47,19 @@ export function generateArrangement(song: SongTree, genrePreset: GenrePreset): G
   segments.forEach((segment, index) => voicedByBeat.set(segment.startBeat, voicedList[index]!));
 
   const timeSignature = song.timeSignature;
+  const bpb = gen.beatsPerBar(timeSignature);
+  const bassOf = (segment: { chord: string }) => bassPitchClassOf(segment.chord);
+
+  const drumNotes: NoteEvent[] = [];
+  for (const segment of segments) {
+    drumNotes.push(...gen.drumsPulse(segment.startBeat, segment.endBeat, bpb));
+  }
 
   const tracks: GeneratedTrack[] = [
-    {
-      instrument: "piano",
-      notes: generatePiano(segments, voicedByBeat, genrePreset, timeSignature),
-    },
-    {
-      instrument: "guitar",
-      notes: generateGuitar(segments, voicedByBeat, genrePreset, timeSignature),
-    },
-    { instrument: "bass", notes: generateBass(segments, genrePreset, timeSignature) },
-    { instrument: "drums", notes: generateDrums(segments, genrePreset, timeSignature) },
+    { instrument: "piano", notes: gen.pianoPad(segments, voicedByBeat) },
+    { instrument: "guitar", notes: gen.guitarPad(segments, voicedByBeat) },
+    { instrument: "bass", notes: gen.bassDownbeat(segments, timeSignature, bassOf) },
+    { instrument: "drums", notes: drumNotes },
   ];
   return tracks.map((track) => ({
     ...track,

@@ -1,7 +1,8 @@
 // 장르 프리셋 카드에 쓰이는 정적 설명 메타데이터.
-// 목 편곡 생성기(arrangement-blueprint.ts)는 아직 프리셋별로 노트를 다르게 만들지 않는다
-// (실제 프리셋 반영 로직은 Task 019 소관). 그래서 여기 텍스트는 "생성된 결과를 분석해 요약한 것"이
-// 아니라, 프리셋을 고르는 단계에서 보여줄 설명용 카피다.
+//
+// 편곡 단순화 리팩터 이후로는 모든 프리셋이 같은 리듬 패턴(코드 패드 + 심플한 비트, Task 019
+// presets.ts/instruments.ts 참고)을 쓰고, 화성 보이싱(3화음만 쓸지 7화음까지 쓸지, 음역대)만
+// 다르다. 그래서 아래 카피도 "악기별 연주 스타일"이 아니라 보이싱 차이 위주로 적는다.
 
 import type { GenrePreset, Instrument } from "@/lib/song-model/types";
 
@@ -11,8 +12,20 @@ export interface GenrePresetMeta {
   description: string;
   /** 악기별 한 줄 요약 — 프리셋 카드의 "악기 구성 미리보기"에 쓰인다 */
   instrumentSummary: Record<Instrument, string>;
-  /** 섹션별 밀도 요약 한 줄 */
-  sectionDensity: string;
+  /** 이 프리셋의 화성 보이싱 특징 한 줄 */
+  voicingNote: string;
+}
+
+// 리듬(기타/베이스/드럼)은 모든 프리셋에서 완전히 동일하다 — 프리셋마다 다른 건 피아노 보이싱
+// 설명뿐이라, 그 한 줄만 갈아 끼우는 함수로 두고 나머지 세 줄은 한 곳에서만 관리한다(리듬
+// 설명 문구가 바뀔 때 프리셋마다 따로 고쳐야 하는 걸 방지).
+function instrumentSummary(pianoNote: string): Record<Instrument, string> {
+  return {
+    piano: pianoNote,
+    guitar: "코드 패드, 피아노보다 한 옥타브 낮게",
+    bass: "마디 시작 근음",
+    drums: "심플한 쿼터노트 비트",
+  };
 }
 
 export const GENRE_PRESET_META: Record<GenrePreset, GenrePresetMeta> = {
@@ -20,49 +33,30 @@ export const GENRE_PRESET_META: Record<GenrePreset, GenrePresetMeta> = {
     preset: "praise_upbeat",
     label: "경쾌한 찬양",
     description: "밝고 텐션 높은 업템포 찬양 반주",
-    instrumentSummary: {
-      piano: "리듬감 있는 옥타브 컴핑",
-      guitar: "다운/업 스트로크 위주",
-      bass: "당김음 섞인 워킹 베이스",
-      drums: "8비트 하이햇 그루브",
-    },
-    sectionDensity: "절부터 전 악기 참여, 후렴에서 다이나믹 최고조",
+    instrumentSummary: instrumentSummary("코드 패드 (7화음까지 포함)"),
+    voicingNote: "넓은 음역(C3~E5)에 7화음까지 써서 풍성한 화성",
   },
   ccm_ballad: {
     preset: "ccm_ballad",
     label: "CCM 발라드",
-    description: "잔잔하게 시작해 후렴에서 풍성해지는 편성",
-    instrumentSummary: {
-      piano: "아르페지오 위주 서정적 반주",
-      guitar: "핑거피킹, 후렴에서만 스트로크 추가",
-      bass: "롱톤 근음 위주",
-      drums: "절에서는 생략, 후렴부터 합류",
-    },
-    sectionDensity: "1절은 피아노 중심, 후렴에서 풀밴드로 확장",
+    description: "서정적인 화성의 발라드 반주",
+    instrumentSummary: instrumentSummary("코드 패드 (7화음까지 포함)"),
+    voicingNote: "중간 음역(C3~C5)에 7화음까지 써서 서정적인 화성",
   },
   hymn_traditional: {
     preset: "hymn_traditional",
     label: "전통 찬송",
-    description: "정박 4성부 화성 중심의 전통 찬송가 반주",
-    instrumentSummary: {
-      piano: "정박 블록 코드(4성부 화성)",
-      guitar: "약하게 코드만 서포트",
-      bass: "마디 시작 근음 위주",
-      drums: "심벌 위주 절제된 박자 유지",
-    },
-    sectionDensity: "전 섹션 동일한 밀도로 안정적으로 진행",
+    description: "단순 3화음 중심의 전통 찬송가 반주",
+    instrumentSummary: instrumentSummary("코드 패드 (3화음)"),
+    voicingNote: "좁은 음역(C3~C4)에 3화음만 써서 담백한 화성",
   },
   acoustic_intimate: {
     preset: "acoustic_intimate",
     label: "어쿠스틱",
-    description: "최소 편성으로 가사에 집중하게 하는 편안한 반주",
-    instrumentSummary: {
-      piano: "여백이 많은 단순 보이싱",
-      guitar: "핑거피킹 중심, 주 멜로디 라인",
-      bass: "간헐적으로만 등장",
-      drums: "생략되거나 퍼커션 정도로만 대체",
-    },
-    sectionDensity: "브릿지·간주에서도 다이나믹 변화를 최소화",
+    description: "최소 편성으로 가사에 집중하게 하는 담백한 반주",
+    instrumentSummary: instrumentSummary("코드 패드 (3화음)"),
+    voicingNote:
+      "전통 찬송보다 한 옥타브 낮은 음역(G2~G3)에 3화음만 써서 더 낮고 조용하게 깔리는 화성",
   },
 };
 

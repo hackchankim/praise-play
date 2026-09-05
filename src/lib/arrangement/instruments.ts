@@ -1,6 +1,10 @@
-// 악기별 패턴 생성기 (Task 019). 각 함수는 이미 "이 구간에서 이 악기가 연주해야 한다"고
-// 걸러진 코드 구간 목록만 받는다 — 섹션별 참여 여부(생략) 판단은 presets.ts/generate.ts가
-// 담당하고, 여기서는 순수하게 "주어진 구간에서 어떤 리듬으로 치는가"만 다룬다.
+// 악기별 패턴 생성기 (Task 019, 이후 편곡 단순화 리팩터로 재작성).
+//
+// 예전에는 장르 프리셋·섹션 타입마다 컴핑/워킹베이스/스트럼 등 "실제 연주를 흉내"내는 여러
+// 스타일을 분기해서 썼지만, 규칙 기반 생성이 진짜 연주를 흉내 내려 할수록 오히려 부자연스럽게
+// 들린다는 게 실사용 피드백으로 확인됐다. 그래서 지금은 "세팅한 빠르기의 기본 박자에 코드만
+// 얹는" 단일하고 정직한 방식으로 통일한다 — 장르 프리셋은 이제 화성 보이싱(3화음/7화음, 음역대,
+// presets.ts의 VOICING_OPTIONS)만 다르게 하고, 리듬 패턴 자체는 모든 프리셋에서 동일하다.
 //
 // 모든 함수가 지키는 공통 규칙: 노트의 duration은 절대 그 구간의 endBeat을 넘지 않는다 —
 // 그래야 다음 코드로 넘어간 뒤까지 이전 코드 노트가 겹쳐 울리는 일이 없다(테스트 체크리스트).
@@ -33,84 +37,17 @@ function pitchClassOnly(noteWithOctave: string): string {
   return noteWithOctave.slice(0, -1);
 }
 
-// ===== 피아노 =====
+// ===== 피아노/기타: 코드 패드 =====
+// 코드가 바뀔 때마다 화음을 한 번 잡아 구간 끝까지 지속한다. 피아노는 원래 보이싱 그대로(중~고
+// 음역), 기타는 한 옥타브 낮춰 서로 겹치지 않게 한다 — 실제 편성에서 기타가 피아노보다 낮은
+// 음역을 맡는 경우가 흔한 것과 같은 이유다.
 
-/** 리듬감 있는 옥타브 컴핑: 마디마다 정박과 당김음 자리에 보이싱 전체 + 근음 옥타브를 짧게 찍는다. */
-export function pianoComping(
+/** pianoPad/guitarPad가 공유하는 본체 — 음높이 변환과 velocity만 다르다. */
+function chordPad(
   segments: ChordSegment[],
   voicedChords: Map<number, VoicedChord>,
-  timeSignature: string,
-): NoteEvent[] {
-  const bpb = beatsPerBar(timeSignature);
-  const notes: NoteEvent[] = [];
-  for (const segment of segments) {
-    const voiced = voicedChords.get(segment.startBeat);
-    if (!voiced) continue;
-    const hits = [0, bpb * 0.75]; // 정박 + 당김음
-    for (const barStart of barStartsWithin(segment, bpb)) {
-      for (const offset of hits) {
-        const beat = barStart + offset;
-        if (beat < segment.startBeat || beat >= segment.endBeat) continue;
-        const duration = clip(beat, 0.75, segment.endBeat);
-        if (duration === null) continue;
-        notes.push({ beat, pitch: withOctave(voiced.bassPitchClass, 3), duration, velocity: 72 });
-        for (const pitch of voiced.voicing) {
-          notes.push({ beat, pitch, duration, velocity: 68 });
-        }
-      }
-    }
-  }
-  return notes;
-}
-
-/** 아르페지오: 보이싱 음을 순서대로 8분음표로 펼쳐 서정적인 흐름을 만든다. */
-export function pianoArpeggio(
-  segments: ChordSegment[],
-  voicedChords: Map<number, VoicedChord>,
-): NoteEvent[] {
-  const notes: NoteEvent[] = [];
-  const step = 0.5;
-  for (const segment of segments) {
-    const voiced = voicedChords.get(segment.startBeat);
-    if (!voiced || voiced.voicing.length === 0) continue;
-    let beat = segment.startBeat;
-    let i = 0;
-    while (beat < segment.endBeat) {
-      const duration = clip(beat, step, segment.endBeat);
-      if (duration === null) break;
-      const pitch = voiced.voicing[i % voiced.voicing.length]!;
-      notes.push({ beat, pitch, duration, velocity: 58 });
-      beat += step;
-      i += 1;
-    }
-  }
-  return notes;
-}
-
-/** 정박 블록 코드: 매 박마다 보이싱 전체를 동시에 친다(4성부 화성 느낌). */
-export function pianoBlock(
-  segments: ChordSegment[],
-  voicedChords: Map<number, VoicedChord>,
-): NoteEvent[] {
-  const notes: NoteEvent[] = [];
-  for (const segment of segments) {
-    const voiced = voicedChords.get(segment.startBeat);
-    if (!voiced) continue;
-    for (let beat = segment.startBeat; beat < segment.endBeat; beat += 1) {
-      const duration = clip(beat, 1, segment.endBeat);
-      if (duration === null) break;
-      for (const pitch of voiced.voicing) {
-        notes.push({ beat, pitch, duration, velocity: 62 });
-      }
-    }
-  }
-  return notes;
-}
-
-/** 여백이 많은 단순 보이싱: 구간이 시작할 때 한 번만, 길게 울린다. */
-export function pianoSparse(
-  segments: ChordSegment[],
-  voicedChords: Map<number, VoicedChord>,
+  transformPitch: (pitch: string) => string,
+  velocity: number,
 ): NoteEvent[] {
   const notes: NoteEvent[] = [];
   for (const segment of segments) {
@@ -119,149 +56,31 @@ export function pianoSparse(
     const duration = clip(segment.startBeat, segment.endBeat - segment.startBeat, segment.endBeat);
     if (duration === null) continue;
     for (const pitch of voiced.voicing) {
-      notes.push({ beat: segment.startBeat, pitch, duration, velocity: 50 });
+      notes.push({ beat: segment.startBeat, pitch: transformPitch(pitch), duration, velocity });
     }
   }
   return notes;
 }
 
-// ===== 기타 =====
-
-/**
- * 마디 길이(bpb)에 맞춰 스트럼 자리를 정한다 — 정박마다 한 번씩 + 마지막 박 반 박 전에 당김음
- * 업스트로크 하나. 4/4면 [0,1,2,3,2.5]로 기존과 사실상 같은 자리가 나온다. 이걸 하드코딩된
- * [0,1,2,2.5,3](4/4 전제)으로 두면 3/4 같은 곡에서 한 마디의 beat 3 자리가 다음 마디의 beat 0과
- * 겹쳐 코드가 두 번 울린다(코드 리뷰에서 실측 확인된 버그).
- */
-function strumOffsetsFor(beatsPerBarCount: number): number[] {
-  const hits: number[] = [];
-  for (let beat = 0; beat < beatsPerBarCount; beat += 1) hits.push(beat);
-  if (beatsPerBarCount >= 2) hits.push(beatsPerBarCount - 1.5);
-  return hits;
-}
-
-/** 다운/업 스트로크: 보이싱을 스트럼처럼 짧게 여러 번 친다. */
-export function guitarStrum(
-  segments: ChordSegment[],
-  voicedChords: Map<number, VoicedChord>,
-  timeSignature: string,
-): NoteEvent[] {
-  const bpb = beatsPerBar(timeSignature);
-  const notes: NoteEvent[] = [];
-  for (const segment of segments) {
-    const voiced = voicedChords.get(segment.startBeat);
-    if (!voiced) continue;
-    for (const barStart of barStartsWithin(segment, bpb)) {
-      const hits = strumOffsetsFor(bpb);
-      for (const offset of hits) {
-        const beat = barStart + offset;
-        if (beat < segment.startBeat || beat >= segment.endBeat) continue;
-        const duration = clip(beat, 0.4, segment.endBeat);
-        if (duration === null) continue;
-        for (const pitch of voiced.voicing) {
-          notes.push({ beat, pitch: withOctave(pitchClassOnly(pitch), 3), duration, velocity: 50 });
-        }
-      }
-    }
-  }
-  return notes;
-}
-
-/** 핑거피킹: 근음-상성부를 번갈아 8분음표로 굴린다. */
-export function guitarFingerpick(
+export function pianoPad(
   segments: ChordSegment[],
   voicedChords: Map<number, VoicedChord>,
 ): NoteEvent[] {
-  const notes: NoteEvent[] = [];
-  const step = 0.5;
-  for (const segment of segments) {
-    const voiced = voicedChords.get(segment.startBeat);
-    if (!voiced || voiced.voicing.length === 0) continue;
-    const pattern = [voiced.bassPitchClass, ...voiced.voicing.map(pitchClassOnly)];
-    let beat = segment.startBeat;
-    let i = 0;
-    while (beat < segment.endBeat) {
-      const duration = clip(beat, step, segment.endBeat);
-      if (duration === null) break;
-      const pitchClass = pattern[i % pattern.length]!;
-      notes.push({ beat, pitch: withOctave(pitchClass, 3), duration, velocity: 48 });
-      beat += step;
-      i += 1;
-    }
-  }
-  return notes;
+  return chordPad(segments, voicedChords, (pitch) => pitch, 62);
 }
 
-/** 약하게 코드만 서포트: 구간 시작에만 낮은 벨로시티로 한 번. */
-export function guitarSparse(
+export function guitarPad(
   segments: ChordSegment[],
   voicedChords: Map<number, VoicedChord>,
 ): NoteEvent[] {
-  const notes: NoteEvent[] = [];
-  for (const segment of segments) {
-    const voiced = voicedChords.get(segment.startBeat);
-    if (!voiced) continue;
-    const duration = clip(segment.startBeat, 1, segment.endBeat);
-    if (duration === null) continue;
-    for (const pitch of voiced.voicing) {
-      notes.push({
-        beat: segment.startBeat,
-        pitch: withOctave(pitchClassOnly(pitch), 3),
-        duration,
-        velocity: 38,
-      });
-    }
-  }
-  return notes;
+  return chordPad(segments, voicedChords, (pitch) => withOctave(pitchClassOnly(pitch), 3), 45);
 }
 
-// ===== 베이스 =====
-// 넷 다 bassOf(segment)로 근음(슬래시 코드면 분모)을 받는다 — 화성 보이싱과 달리 베이스는
-// Voicing 딕셔너리를 거치지 않고 코드 근음을 직접 쓴다.
+// ===== 베이스: 마디 시작 근음 =====
+// bassOf(segment)로 근음(슬래시 코드면 분모)을 받는다 — 화성 보이싱과 달리 베이스는 Voicing
+// 딕셔너리를 거치지 않고 코드 근음을 직접 쓴다.
 
-/** 당김음 섞인 워킹 베이스: 정박 근음 + 당김음 자리에 근음을 한 번 더. */
-export function bassWalking(
-  segments: ChordSegment[],
-  timeSignature: string,
-  bassOf: (segment: ChordSegment) => string,
-): NoteEvent[] {
-  const bpb = beatsPerBar(timeSignature);
-  const notes: NoteEvent[] = [];
-  for (const segment of segments) {
-    for (const barStart of barStartsWithin(segment, bpb)) {
-      const hits = [0, bpb * 0.5 + 0.5];
-      for (const offset of hits) {
-        const beat = barStart + offset;
-        if (beat < segment.startBeat || beat >= segment.endBeat) continue;
-        const duration = clip(beat, 1, segment.endBeat);
-        if (duration === null) continue;
-        notes.push({ beat, pitch: withOctave(bassOf(segment), 2), duration, velocity: 95 });
-      }
-    }
-  }
-  return notes;
-}
-
-/** 롱톤 근음: 구간 전체를 하나의 긴 근음으로 지속한다. */
-export function bassLongTone(
-  segments: ChordSegment[],
-  bassOf: (segment: ChordSegment) => string,
-): NoteEvent[] {
-  const notes: NoteEvent[] = [];
-  for (const segment of segments) {
-    const duration = clip(segment.startBeat, segment.endBeat - segment.startBeat, segment.endBeat);
-    if (duration === null) continue;
-    notes.push({
-      beat: segment.startBeat,
-      pitch: withOctave(bassOf(segment), 2),
-      duration,
-      velocity: 78,
-    });
-  }
-  return notes;
-}
-
-/** 마디 시작 근음: 각 마디 첫 박에만 근음. */
+/** 각 마디 첫 박에만 근음을 짚는다. */
 export function bassDownbeat(
   segments: ChordSegment[],
   timeSignature: string,
@@ -280,68 +99,31 @@ export function bassDownbeat(
   return notes;
 }
 
-/** 간헐적으로만 등장: 구간 시작에만, 짧게. */
-export function bassSparse(
-  segments: ChordSegment[],
-  bassOf: (segment: ChordSegment) => string,
-): NoteEvent[] {
-  const notes: NoteEvent[] = [];
-  for (const segment of segments) {
-    const duration = clip(segment.startBeat, 1, segment.endBeat);
-    if (duration === null) continue;
-    notes.push({
-      beat: segment.startBeat,
-      pitch: withOctave(bassOf(segment), 2),
-      duration,
-      velocity: 70,
-    });
-  }
-  return notes;
-}
-
-// ===== 드럼 =====
-// pitch는 음높이가 아니라 smplr DrumMachine 샘플 별칭(kick/snare/hihat-closed/crash) — Task 006부터
-// 이어진 관례를 그대로 따른다. 실제 로드되는 킷에 따라 별칭이 다를 수 있어 재생 어댑터(Task 021)가
-// 최종 매핑을 책임진다.
-
-/**
- * 8비트 하이햇 그루브: 킥/스네어를 정박마다 번갈아 찍고(마디 길이에 맞춰 확장·축소), 하이햇은
- * 마디 처음부터 끝까지 8분음표로 채운다. 이전엔 4/4를 전제로 킥/스네어를 beat 0~3에, 하이햇을
- * 8개 고정으로 찍었는데, 그러면 3/4 같은 곡에서 beat 3(원래 4/4의 4번째 박) 자리가 다음 마디의
- * beat 0과 겹쳐 노트가 중복 발음됐다(코드 리뷰에서 실측 확인된 버그) — beatsPerBarCount로
- * 받아 항상 그 마디 폭 안에서만 패턴을 채운다.
- */
-export function drumsActive(
-  barStarts: number[],
+// ===== 드럼: 심플한 쿼터노트 펄스 =====
+// pitch는 음높이가 아니라 smplr DrumMachine 샘플 별칭(kick/hihat-closed) — Task 006부터 이어진
+// 관례를 그대로 따른다. 실제 로드되는 킷에 따라 별칭이 다를 수 있어 재생 어댑터(Task 021)가
+// 최종 매핑을 책임진다. 그루브를 흉내 내지 않고 마디 첫 박 킥 + 매 박 하이햇만으로 빠르기를
+// 느낄 수 있게 하는 것이 목적이다(클릭 트랙에 가깝다).
+//
+// segment 절대 beat 범위를 정수 박 단위로 직접 순회한다 — barStartsWithin으로 구한 "마디 시작
+// 지점" 목록을 받아 지점마다 고정 길이(beatsPerBarCount)의 패턴을 통째로 채우는 방식은, 코드가
+// 마디 중간에서 바뀌어 그 지점이 실제 마디 경계와 어긋나면(예: 4/4에서 2박에 코드가 바뀌어
+// 8박까지 지속) 그 지점에서 시작한 패턴이 다음 실제 마디 경계와 겹쳐 같은 박에 하이햇이 중복
+// 발음된다(code review에서 실측 확인된 버그, 3/4뿐 아니라 흔한 4/4 코드 진행에서도 재현됨).
+// 절대 beat을 1박 단위로 한 번씩만 순회하면 이 중복 자체가 구조적으로 불가능해진다.
+export function drumsPulse(
+  segmentStart: number,
   segmentEnd: number,
   beatsPerBarCount: number,
 ): NoteEvent[] {
   const notes: NoteEvent[] = [];
-  for (const barStart of barStarts) {
-    const push = (beat: number, pitch: string, velocity: number, duration: number) => {
-      if (beat >= segmentEnd) return;
-      const clipped = clip(beat, duration, segmentEnd);
-      if (clipped === null) return;
-      notes.push({ beat, pitch, duration: clipped, velocity });
-    };
-    for (let beat = 0; beat < beatsPerBarCount; beat += 1) {
-      const isKick = beat % 2 === 0;
-      push(barStart + beat, isKick ? "kick" : "snare", isKick ? 105 : 100, 1);
+  for (let beat = Math.ceil(segmentStart); beat < segmentEnd; beat += 1) {
+    const duration = clip(beat, 1, segmentEnd);
+    if (duration === null) break;
+    if (beat % beatsPerBarCount === 0) {
+      notes.push({ beat, pitch: "kick", duration, velocity: 100 });
     }
-    for (let eighth = 0; eighth < beatsPerBarCount * 2; eighth += 1) {
-      push(barStart + eighth * 0.5, "hihat-closed", 55, 0.5);
-    }
-  }
-  return notes;
-}
-
-/** 심벌 위주 절제된 박자: 마디 첫 박에 크래시만. */
-export function drumsMinimal(barStarts: number[], segmentEnd: number): NoteEvent[] {
-  const notes: NoteEvent[] = [];
-  for (const barStart of barStarts) {
-    const duration = clip(barStart, 1, segmentEnd);
-    if (duration === null) continue;
-    notes.push({ beat: barStart, pitch: "crash", duration, velocity: 45 });
+    notes.push({ beat, pitch: "hihat-closed", duration, velocity: 50 });
   }
   return notes;
 }
