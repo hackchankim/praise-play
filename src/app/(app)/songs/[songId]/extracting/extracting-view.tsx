@@ -61,10 +61,32 @@ export function ExtractingView({ songId }: ExtractingViewProps) {
 
     function subscribe() {
       if (cancelled) return;
-      // 재구독할 때마다 채널 이름을 새로 발급한다 — 같은 이름의 채널을 재사용하면 supabase-js가
-      // 방금 CLOSED된 채널과 혼동해 재구독이 무시되는 경우가 있다.
+      // 이 구독 시도 하나에 대해 CLOSED/CHANNEL_ERROR/TIMED_OUT 처리를 딱 한 번만 실행하기
+      // 위한 가드 — 아래 이유로 반드시 필요하다(code review 없이 라이브 테스트로 직접
+      // 재현: RangeError: Maximum call stack size exceeded). removeChannel(channel)이
+      // 내부적으로 channel.unsubscribe() → Channel.leave()를 부르는데, 이 leave()가
+      // (@supabase/realtime-js가 쓰는 Phoenix 채널 구현의 특성상) 그 채널 자신의 close
+      // 리스너를 동기적으로 다시 트리거할 수 있다 — 그 리스너가 바로 이 status 콜백이므로,
+      // "CLOSED 처리 → removeChannel → close 재트리거 → 다시 CLOSED 처리 → removeChannel →
+      // ..."가 같은 호출 스택 안에서 무한 반복돼 스택 오버플로로 크래시한다. 한 번 처리했으면
+      // 재진입 호출은 즉시 반환해 이 재귀를 상수 깊이로 끊는다.
+      let closeHandled = false;
+      // 재구독할 때마다 채널 이름을 새로 발급한다 — 같은 이름의 채널을 RealtimeClient.channel()에
+      // 다시 넘기면 내부적으로 topic 문자열이 일치하는 기존 채널 객체를 그대로 재사용한다
+      // (node_modules/@supabase/realtime-js의 RealtimeClient.channel() 확인). 방금
+      // removeChannel()로 정리를 "시작"만 해 둔 채널(unsubscribe→teardown이 비동기라 아직
+      // this.channels에 남아 있을 수 있다)이 그 대상이면, 이미 subscribe()된 그 채널 객체에
+      // .on()을 다시 호출하는 셈이 되어 "cannot add postgres_changes callbacks... after
+      // subscribe()" 예외가 던져진다 — 재구독 자체가 통째로 실패한다.
+      //
+      // Date.now()(밀리초 단위)만으로는 유일성이 보장되지 않는다 — React StrictMode의 개발
+      // 모드 마운트→클린업→재마운트가 사실상 동기적으로 일어나 같은 밀리초에 두 번째
+      // subscribe()가 호출되면, 방금 클린업에서 정리를 "시작"한 채널과 정확히 같은 topic
+      // 이름이 나와 위 충돌이 그대로 재현된다(실측 재현: 페이지 진입 한 번에 동일 에러가
+      // 200번 가까이 반복 출력됨 — 재구독이 매번 이 충돌로 실패해 재연결 루프가 도는 것으로
+      // 보인다). crypto.randomUUID()로 시간과 무관하게 항상 새 topic을 보장한다.
       channel = supabaseRepositoryClient
-        .channel(`extraction_jobs:${songId}:${Date.now()}`)
+        .channel(`extraction_jobs:${songId}:${crypto.randomUUID()}`)
         .on(
           "postgres_changes",
           {
@@ -84,6 +106,8 @@ export function ExtractingView({ songId }: ExtractingViewProps) {
             return;
           }
           if (status === "CLOSED" || status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+            if (closeHandled) return;
+            closeHandled = true;
             if (channel) void supabaseRepositoryClient.removeChannel(channel);
             reconnectTimer = setTimeout(subscribe, 2000);
           }
