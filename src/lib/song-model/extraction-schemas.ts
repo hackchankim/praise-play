@@ -38,6 +38,14 @@ export const structureExtractionLineSchema = z.object({
   /** textExtractionResult의 sections[].lines[] 순서와 대응 */
   lineIndex: z.number().int().min(0),
   beatsInLine: z.number().positive().max(64),
+  /**
+   * 이 줄에 등장하는 코드 기호들을(textExtractionResult의 같은 줄 chords 배열과 왼쪽부터
+   * 같은 순서로) 각각 이 줄 시작 기준 몇 번째 박에 걸리는지 나열한 값. 글자 위치에 비례해
+   * 사후 추정하던 것을 모델이 마디·박자 구조를 보고 직접 답하게 한다 — merge-extraction.ts가
+   * 이 배열의 개수가 실제 코드 개수와 맞고 두 번째 self-consistency 호출과도 일치할 때만
+   * 신뢰하고, 그렇지 않으면 예전 글자-비례 추정으로 되돌아간다.
+   */
+  chordBeats: z.array(z.number().min(0).max(64)).optional(),
   isRepeatStart: z.boolean().optional(),
   /** 도돌이표로 되돌아갈 대상 줄의 lineIndex */
   repeatTargetLineIndex: z.number().int().min(0).optional(),
