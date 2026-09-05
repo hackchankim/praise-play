@@ -1,36 +1,33 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { GripVertical, SplitSquareHorizontal, Trash2 } from "lucide-react";
+import { GripVertical, Plus, SplitSquareHorizontal, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ChordChip } from "@/components/domain/chord-chip";
 import { cn } from "@/lib/utils";
-import type { EditableChordEvent, EditableLine } from "./correction-types";
-
-// 가사 문자 오프셋과 코드 칩의 좌표를 일치시키기 위해 코드 행과 가사 입력 모두 같은
-// 모노스페이스 폰트/크기/좌측 패딩을 쓴다. charOffset은 이 폰트 기준 "ch" 단위로 그대로 위치가 된다.
-const ROW_FONT_CLASS = "font-mono text-sm";
-const ROW_PADDING_PX = 10;
-const DRAG_THRESHOLD_PX = 3;
+import { deriveCells, type EditableChordEvent, type EditableLine } from "./correction-types";
 
 interface LineRowProps {
   line: EditableLine;
   lineIndex: number;
   canSplit: boolean;
-  charWidthPx: number;
+  /** 이 줄을 나눌 박자 칸 수 — round(lineBeatsSpan)이다. 재구성 전 원본 줄은 임의의 길이일 수
+   * 있고, 재구성한 카드는 항상 measuresPerLine*박자표 분자와 같다. */
+  cellCount: number;
+  /** 마디 경계를 표시하기 위한 박자표 분자(예: 4/4 → 4) */
+  beatsPerBarCount: number;
   highlightedChordUiKey: string | null;
-  onLyricsChange: (lyrics: string) => void;
   onStartBeatChange: (startBeat: number) => void;
   onRemoveLine: () => void;
   onSplitHere: () => void;
-  onAddChord: (charOffset: number) => void;
+  onUpdateCellText: (cellIndex: number, text: string) => void;
+  onAddChordAtCell: (cellIndex: number) => void;
   onUpdateChord: (
     chordUiKey: string,
-    patch: Partial<Pick<EditableChordEvent, "chord" | "charOffset" | "beatOffset" | "needsReview">>,
+    patch: Partial<Pick<EditableChordEvent, "chord" | "needsReview">>,
   ) => void;
   onRemoveChord: (chordUiKey: string) => void;
   registerChordNode: (chordUiKey: string, node: HTMLDivElement | null) => void;
@@ -40,13 +37,14 @@ export function LineRow({
   line,
   lineIndex,
   canSplit,
-  charWidthPx,
+  cellCount,
+  beatsPerBarCount,
   highlightedChordUiKey,
-  onLyricsChange,
   onStartBeatChange,
   onRemoveLine,
   onSplitHere,
-  onAddChord,
+  onUpdateCellText,
+  onAddChordAtCell,
   onUpdateChord,
   onRemoveChord,
   registerChordNode,
@@ -56,19 +54,8 @@ export function LineRow({
   });
   const style = { transform: CSS.Transform.toString(transform), transition };
 
-  const rowRef = useRef<HTMLDivElement>(null);
-  const [editingChordUiKey, setEditingChordUiKey] = useState<string | null>(null);
-
-  const handleRowClick = useCallback(
-    (event: ReactMouseEvent<HTMLDivElement>) => {
-      if (event.target !== rowRef.current) return;
-      const rect = rowRef.current.getBoundingClientRect();
-      const clickX = event.clientX - rect.left - ROW_PADDING_PX;
-      const offset = Math.round(clickX / charWidthPx);
-      onAddChord(Math.max(0, Math.min(offset, line.lyrics.length)));
-    },
-    [charWidthPx, line.lyrics.length, onAddChord],
-  );
+  const cells = deriveCells(line, cellCount);
+  const [editingCellIndex, setEditingCellIndex] = useState<number | null>(null);
 
   return (
     <div
@@ -89,47 +76,47 @@ export function LineRow({
         <GripVertical className="size-4" />
       </button>
 
-      <div className="min-w-0 flex-1">
-        {/* 코드 칩 행 — 가사 입력 위에 겹쳐 표시되며, 빈 공간을 클릭하면 그 위치에 코드가 추가된다 */}
-        <div
-          ref={rowRef}
-          onClick={handleRowClick}
-          className={cn(ROW_FONT_CLASS, "relative h-7 cursor-text leading-7 select-none")}
-          style={{ paddingLeft: ROW_PADDING_PX }}
-        >
-          {line.chordEvents.map((chord) => (
-            <ChordChipHandle
-              key={chord.uiKey}
-              chord={chord}
-              charWidthPx={charWidthPx}
-              lyricsLength={line.lyrics.length}
-              isEditing={editingChordUiKey === chord.uiKey}
-              isHighlighted={highlightedChordUiKey === chord.uiKey}
-              onOpenEdit={() => setEditingChordUiKey(chord.uiKey)}
-              onCloseEdit={() => setEditingChordUiKey(null)}
-              onMove={(charOffset) => onUpdateChord(chord.uiKey, { charOffset })}
-              onUpdate={(patch) => onUpdateChord(chord.uiKey, patch)}
-              onRemove={() => {
-                setEditingChordUiKey(null);
-                onRemoveChord(chord.uiKey);
-              }}
-              registerNode={(node) => registerChordNode(chord.uiKey, node)}
-            />
-          ))}
-          {line.chordEvents.length === 0 && (
-            <span className="pointer-events-none text-xs text-muted-foreground/70">
-              클릭해서 코드 추가
-            </span>
-          )}
-        </div>
-
-        <Input
-          value={line.lyrics}
-          onChange={(e) => onLyricsChange(e.target.value)}
-          placeholder="가사를 입력하세요"
-          className={cn(ROW_FONT_CLASS, "px-0")}
-          style={{ paddingLeft: ROW_PADDING_PX }}
-        />
+      {/* 박자 칸 그리드 — 칸 하나 = 1박. beatsPerBarCount칸마다 굵은 경계선으로 마디를 나눠
+          보여준다. 코드는 항상 칸 하나에 최대 하나만 붙는다("칸당 코드 1개"). */}
+      <div className="flex min-w-0 flex-1 gap-1">
+        {cells.map((cell, index) => {
+          const chord = cell.chordUiKey
+            ? (line.chordEvents.find((c) => c.uiKey === cell.chordUiKey) ?? null)
+            : null;
+          return (
+            <div
+              key={index}
+              className={cn(
+                "flex min-w-0 flex-1 flex-col gap-1 border-l pl-1",
+                index % beatsPerBarCount === 0 ? "border-border" : "border-border/30",
+              )}
+            >
+              <span className="text-[10px] leading-none text-muted-foreground/60">
+                {(index % beatsPerBarCount) + 1}
+              </span>
+              <BeatCellChord
+                chord={chord}
+                isEditing={editingCellIndex === index}
+                isHighlighted={chord !== null && highlightedChordUiKey === chord.uiKey}
+                onOpenEdit={() => setEditingCellIndex(index)}
+                onCloseEdit={() => setEditingCellIndex(null)}
+                onAdd={() => onAddChordAtCell(index)}
+                onUpdate={(patch) => chord && onUpdateChord(chord.uiKey, patch)}
+                onRemove={() => {
+                  setEditingCellIndex(null);
+                  if (chord) onRemoveChord(chord.uiKey);
+                }}
+                registerNode={(node) => chord && registerChordNode(chord.uiKey, node)}
+              />
+              <Input
+                value={cell.text}
+                onChange={(e) => onUpdateCellText(index, e.target.value)}
+                placeholder="가사"
+                className="h-7 px-1 text-xs"
+              />
+            </div>
+          );
+        })}
       </div>
 
       <div className="mt-6 flex shrink-0 items-center gap-1">
@@ -167,76 +154,53 @@ export function LineRow({
   );
 }
 
-interface ChordChipHandleProps {
-  chord: EditableChordEvent;
-  charWidthPx: number;
-  lyricsLength: number;
+interface BeatCellChordProps {
+  chord: EditableChordEvent | null;
   isEditing: boolean;
   isHighlighted: boolean;
   onOpenEdit: () => void;
   onCloseEdit: () => void;
-  onMove: (charOffset: number) => void;
-  onUpdate: (
-    patch: Partial<Pick<EditableChordEvent, "chord" | "beatOffset" | "needsReview">>,
-  ) => void;
+  onAdd: () => void;
+  onUpdate: (patch: Partial<Pick<EditableChordEvent, "chord" | "needsReview">>) => void;
   onRemove: () => void;
   registerNode: (node: HTMLDivElement | null) => void;
 }
 
-function ChordChipHandle({
+/** 칸 상단의 코드 슬롯 — 코드가 없으면 추가 버튼, 있으면 칩(클릭하면 수정 패널) */
+function BeatCellChord({
   chord,
-  charWidthPx,
-  lyricsLength,
   isEditing,
   isHighlighted,
   onOpenEdit,
   onCloseEdit,
-  onMove,
+  onAdd,
   onUpdate,
   onRemove,
   registerNode,
-}: ChordChipHandleProps) {
+}: BeatCellChordProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const draggedRef = useRef(false);
 
-  const handlePointerDown = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (event.button !== 0) return;
-      event.preventDefault();
-      event.stopPropagation();
-      draggedRef.current = false;
-      const startX = event.clientX;
-      const startOffset = chord.charOffset;
-
-      const handleMove = (moveEvent: PointerEvent) => {
-        const deltaPx = moveEvent.clientX - startX;
-        if (Math.abs(deltaPx) > DRAG_THRESHOLD_PX) draggedRef.current = true;
-        const deltaChars = Math.round(deltaPx / charWidthPx);
-        const next = Math.max(0, Math.min(startOffset + deltaChars, lyricsLength));
-        onMove(next);
-      };
-      const handleUp = () => {
-        window.removeEventListener("pointermove", handleMove);
-        window.removeEventListener("pointerup", handleUp);
-        if (!draggedRef.current) onOpenEdit();
-      };
-      window.addEventListener("pointermove", handleMove);
-      window.addEventListener("pointerup", handleUp);
-    },
-    [chord.charOffset, charWidthPx, lyricsLength, onMove, onOpenEdit],
-  );
-
-  // 바깥을 클릭하면 편집 패널을 닫는다.
   useEffect(() => {
     if (!isEditing) return;
     const handleOutside = (event: PointerEvent) => {
-      if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
-        onCloseEdit();
-      }
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) onCloseEdit();
     };
     document.addEventListener("pointerdown", handleOutside);
     return () => document.removeEventListener("pointerdown", handleOutside);
   }, [isEditing, onCloseEdit]);
+
+  if (!chord) {
+    return (
+      <button
+        type="button"
+        onClick={onAdd}
+        className="flex h-6 w-fit items-center justify-center rounded-md border border-dashed border-border text-muted-foreground hover:border-primary hover:text-primary"
+        aria-label="이 칸에 코드 추가"
+      >
+        <Plus className="size-3.5" />
+      </button>
+    );
+  }
 
   return (
     <div
@@ -244,28 +208,18 @@ function ChordChipHandle({
         wrapperRef.current = node;
         registerNode(node);
       }}
-      className="absolute top-0 -translate-x-1/2"
-      style={{ left: `${chord.charOffset}ch` }}
+      className="relative w-fit"
     >
-      <div
-        onPointerDown={handlePointerDown}
-        onClick={(event) => {
-          // 드래그를 마친 뒤 브라우저가 합성하는 click 이벤트가 줄 컨테이너의
-          // "빈 공간 클릭 시 코드 추가" 핸들러(handleRowClick)까지 버블링되면
-          // 이동한 칩과 별개로 새 칩이 같은 위치에 추가되어 데이터가 중복된다.
-          event.stopPropagation();
-        }}
+      <button
+        type="button"
+        onClick={onOpenEdit}
         className={cn(
-          "cursor-grab touch-none active:cursor-grabbing",
           isHighlighted && "animate-pulse rounded-md ring-2 ring-primary ring-offset-1",
         )}
       >
         <ChordChip chord={chord.chord} needsReview={chord.needsReview} />
-      </div>
-
+      </button>
       {isEditing && (
-        // 칩(≈21px)보다 훨씬 넓은 패널(w-36)을 가운데 정렬하면 charOffset이 0에 가까운 칩에서는
-        // 패널이 줄 왼쪽 바깥으로 넘어가 잘려 보인다. 칩의 왼쪽 끝에 맞춰 펼치는 편이 안전하다.
         <div className="absolute top-full left-0 z-20 mt-1 flex w-36 flex-col gap-1.5 rounded-lg border bg-popover p-2 text-popover-foreground shadow-md">
           <label className="flex flex-col gap-0.5 text-[11px] text-muted-foreground">
             코드 기호
@@ -273,15 +227,6 @@ function ChordChipHandle({
               autoFocus
               value={chord.chord}
               onChange={(e) => onUpdate({ chord: e.target.value })}
-              className="h-7 text-xs"
-            />
-          </label>
-          <label className="flex flex-col gap-0.5 text-[11px] text-muted-foreground">
-            줄 내 박자 위치
-            <Input
-              type="number"
-              value={chord.beatOffset}
-              onChange={(e) => onUpdate({ beatOffset: Number(e.target.value) || 0 })}
               className="h-7 text-xs"
             />
           </label>

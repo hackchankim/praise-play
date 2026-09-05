@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronsRight, Home } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -18,6 +18,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ErrorState } from "@/components/domain/error-state";
 import { PageHeader } from "@/components/domain/page-header";
 import { routes } from "@/lib/routes";
+import { cn } from "@/lib/utils";
 import {
   OptimisticLockConflictError,
   deleteDraftCorrection,
@@ -31,26 +32,34 @@ import { ImageViewer } from "./image-viewer";
 import { SongMetaForm } from "./song-meta-form";
 import { SectionCard } from "./section-card";
 import {
-  addChord,
+  addChordAtCell,
   addLine,
   buildSaveCorrectionRequest,
   collectReviewTargets,
   computeAbsoluteStartBeats,
   computeSectionDisplayLabels,
   fromSaveCorrectionRequest,
+  lineBeatsSpan,
   mergeSectionWithNext,
+  reorganizeIntoMeasures,
   removeChord,
   removeLine,
   reorderLines,
   splitSectionAtLine,
   toEditableSections,
   toEditableSong,
+  updateCellText,
   updateChord,
-  updateLineLyrics,
   updateLineStartBeat,
+  type EditableLine,
   type EditableSection,
   type EditableSong,
 } from "./correction-types";
+
+/** section-card.tsx가 LineRow에 넘기는 cellCount와 같은 규칙(round(lineBeatsSpan)) */
+function lineCellCount(section: EditableSection, line: EditableLine): number {
+  return Math.max(1, Math.round(lineBeatsSpan(section, line)));
+}
 
 // 마지막 편집 후 이 정도 지나면 서버에 임시 저장한다(저장 없이 이탈해도 이어서 교정 가능해야
 // 한다는 PRD 요구 — 명시적으로 "임시 저장 후 나가기"를 누르지 않아도 보호되게 한다).
@@ -109,6 +118,8 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
 
   const [reviewIndex, setReviewIndex] = useState(-1);
   const [highlightedChordUiKey, setHighlightedChordUiKey] = useState<string | null>(null);
+  // "재구성" 버튼이 몇 마디 단위로 줄을 쪼갤지 — 저장되지 않는 순수 UI 설정값이다.
+  const [measuresPerLine, setMeasuresPerLine] = useState<1 | 2>(1);
 
   const chordNodeRefs = useRef(new Map<string, HTMLDivElement>());
   const reviewHighlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -158,14 +169,6 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
     return () => window.removeEventListener("beforeunload", handler);
   }, [dirty]);
 
-  // ===== 가사 문자 오프셋 ↔ 픽셀 변환용 모노스페이스 글자폭 측정 =====
-  const [charWidthPx, setCharWidthPx] = useState(8.4);
-  const probeRef = useRef<HTMLSpanElement>(null);
-  useLayoutEffect(() => {
-    const width = probeRef.current?.getBoundingClientRect().width;
-    if (width) setCharWidthPx(width);
-  }, []);
-
   const mutate = (fn: (sections: EditableSection[]) => EditableSection[]) => {
     setSections((prev) => fn(prev));
     setDirty(true);
@@ -212,6 +215,10 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
   const registerChordNode = (chordUiKey: string, node: HTMLDivElement | null) => {
     if (node) chordNodeRefs.current.set(chordUiKey, node);
     else chordNodeRefs.current.delete(chordUiKey);
+  };
+
+  const handleReorganize = () => {
+    mutate((prev) => reorganizeIntoMeasures(prev, songMeta.timeSignature, measuresPerLine));
   };
 
   // ===== 저장 / 임시 저장 / 이탈 =====
@@ -331,7 +338,7 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
             startBeat={startBeats[index]}
             repeatOptions={repeatOptions}
             canMergeNext={index < sections.length - 1}
-            charWidthPx={charWidthPx}
+            timeSignature={songMeta.timeSignature}
             highlightedChordUiKey={highlightedChordUiKey}
             onChangeType={(type: SectionType) =>
               mutate((prev) => updateSectionAt(prev, section.clientKey, (s) => ({ ...s, type })))
@@ -361,13 +368,6 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
               )
             }
             onSplitAt={(lineIndex) => mutate((prev) => splitSectionAtLine(prev, index, lineIndex))}
-            onLyricsChange={(lineUiKey, lyrics) =>
-              mutate((prev) =>
-                updateSectionAt(prev, section.clientKey, (s) =>
-                  updateLineLyrics(s, lineUiKey, lyrics),
-                ),
-              )
-            }
             onLineStartBeatChange={(lineUiKey, startBeat) =>
               mutate((prev) =>
                 updateSectionAt(prev, section.clientKey, (s) =>
@@ -375,9 +375,22 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
                 ),
               )
             }
-            onAddChord={(lineUiKey, charOffset) =>
+            onUpdateCellText={(lineUiKey, cellIndex, text) =>
               mutate((prev) =>
-                updateSectionAt(prev, section.clientKey, (s) => addChord(s, lineUiKey, charOffset)),
+                updateSectionAt(prev, section.clientKey, (s) => {
+                  const line = s.lines.find((l) => l.uiKey === lineUiKey);
+                  const cellCount = line ? lineCellCount(s, line) : 1;
+                  return updateCellText(s, lineUiKey, cellIndex, cellCount, text);
+                }),
+              )
+            }
+            onAddChordAtCell={(lineUiKey, cellIndex) =>
+              mutate((prev) =>
+                updateSectionAt(prev, section.clientKey, (s) => {
+                  const line = s.lines.find((l) => l.uiKey === lineUiKey);
+                  const cellCount = line ? lineCellCount(s, line) : 1;
+                  return addChordAtCell(s, lineUiKey, cellIndex, cellCount);
+                }),
               )
             }
             onUpdateChord={(lineUiKey, chordUiKey, patch) =>
@@ -405,14 +418,6 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
-      <span
-        ref={probeRef}
-        aria-hidden
-        className="pointer-events-none invisible absolute font-mono text-sm"
-      >
-        0
-      </span>
-
       <PageHeader
         title={`교정: ${tree.song.title}`}
         description={`곡 ID: ${songId} · 원본 이미지·가사·코드를 확인하고 확정하세요.`}
@@ -474,6 +479,36 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
             <ChevronsRight />
           </Button>
         )}
+
+        <div className="ml-auto flex items-center gap-1.5">
+          <span className="text-xs text-muted-foreground">줄당 마디 수</span>
+          <div className="flex rounded-md border p-0.5">
+            {([1, 2] as const).map((n) => (
+              <button
+                key={n}
+                type="button"
+                onClick={() => setMeasuresPerLine(n)}
+                aria-pressed={measuresPerLine === n}
+                className={cn(
+                  "rounded px-2 py-0.5 text-xs",
+                  measuresPerLine === n
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted",
+                )}
+              >
+                {n}마디
+              </button>
+            ))}
+          </div>
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={handleReorganize}
+            title="모든 줄을 설정한 마디 수 이하로 다시 나눕니다"
+          >
+            재구성
+          </Button>
+        </div>
       </div>
 
       {/* 데스크톱: 좌우 분할. 모바일: 탭 전환. 코드 칩 참조가 중복되지 않도록 한쪽만 마운트한다 */}

@@ -28,10 +28,12 @@ import { SectionBadge } from "@/components/domain/section-badge";
 import { LineRow } from "./line-row";
 import {
   SECTION_TYPE_OPTIONS,
+  computeLineBeatsSpans,
   type EditableChordEvent,
   type EditableSection,
 } from "./correction-types";
 import type { SectionType } from "@/lib/song-model/types";
+import { beatsPerBar } from "@/lib/song-model/time-signature";
 
 const NO_REPEAT_VALUE = "__none__";
 
@@ -52,7 +54,7 @@ interface SectionCardProps {
   startBeat: number;
   repeatOptions: RepeatOption[];
   canMergeNext: boolean;
-  charWidthPx: number;
+  timeSignature: string;
   highlightedChordUiKey: string | null;
   onChangeType: (type: SectionType) => void;
   onChangeLengthBeats: (lengthBeats: number) => void;
@@ -62,13 +64,13 @@ interface SectionCardProps {
   onRemoveLine: (lineUiKey: string) => void;
   onReorderLines: (activeUiKey: string, overUiKey: string) => void;
   onSplitAt: (lineIndex: number) => void;
-  onLyricsChange: (lineUiKey: string, lyrics: string) => void;
   onLineStartBeatChange: (lineUiKey: string, startBeat: number) => void;
-  onAddChord: (lineUiKey: string, charOffset: number) => void;
+  onUpdateCellText: (lineUiKey: string, cellIndex: number, text: string) => void;
+  onAddChordAtCell: (lineUiKey: string, cellIndex: number) => void;
   onUpdateChord: (
     lineUiKey: string,
     chordUiKey: string,
-    patch: Partial<Pick<EditableChordEvent, "chord" | "charOffset" | "beatOffset" | "needsReview">>,
+    patch: Partial<Pick<EditableChordEvent, "chord" | "needsReview">>,
   ) => void;
   onRemoveChord: (lineUiKey: string, chordUiKey: string) => void;
   registerChordNode: (chordUiKey: string, node: HTMLDivElement | null) => void;
@@ -80,7 +82,7 @@ export function SectionCard({
   startBeat,
   repeatOptions,
   canMergeNext,
-  charWidthPx,
+  timeSignature,
   highlightedChordUiKey,
   onChangeType,
   onChangeLengthBeats,
@@ -90,9 +92,9 @@ export function SectionCard({
   onRemoveLine,
   onReorderLines,
   onSplitAt,
-  onLyricsChange,
   onLineStartBeatChange,
-  onAddChord,
+  onUpdateCellText,
+  onAddChordAtCell,
   onUpdateChord,
   onRemoveChord,
   registerChordNode,
@@ -101,6 +103,11 @@ export function SectionCard({
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
+
+  const beatsPerBarCount = beatsPerBar(timeSignature);
+  // 줄마다 lineBeatsSpan을 따로 부르면 그때마다 전체 줄을 다시 정렬해 O(N^2 log N)이 된다
+  // (code review 지적) — 섹션당 한 번만 계산한다.
+  const beatsSpans = computeLineBeatsSpans(section);
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
@@ -130,7 +137,11 @@ export function SectionCard({
             value={section.type}
             onValueChange={(value) => onChangeType(value as SectionType)}
           >
-            <SelectTrigger size="sm" aria-label="섹션 타입">
+            <SelectTrigger
+              size="sm"
+              aria-label="섹션 타입"
+              title="이 구간이 절/후렴/브릿지 등 어떤 종류인지"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -142,7 +153,10 @@ export function SectionCard({
             </SelectContent>
           </Select>
 
-          <label className="flex items-center gap-1 text-xs text-muted-foreground">
+          <label
+            className="flex items-center gap-1 text-xs text-muted-foreground"
+            title="이 구간 전체의 박자 수 — 다음 구간이 몇 박째부터 시작하는지를 정합니다"
+          >
             길이(박)
             <Input
               type="number"
@@ -153,7 +167,10 @@ export function SectionCard({
             />
           </label>
 
-          <label className="flex items-center gap-1 text-xs text-muted-foreground">
+          <label
+            className="flex items-center gap-1 text-xs text-muted-foreground"
+            title="이 구간이 다른 구간과 똑같은 구조를 반복한다면 그 구간을 선택하세요"
+          >
             반복
             <Select
               items={repeatTargetItems}
@@ -182,7 +199,7 @@ export function SectionCard({
             size="sm"
             onClick={onMergeNext}
             disabled={!canMergeNext}
-            title="다음 섹션과 병합"
+            title="이 구간과 바로 다음 구간을 하나로 합칩니다"
           >
             <Combine />
             병합
@@ -202,15 +219,18 @@ export function SectionCard({
                 line={line}
                 lineIndex={lineIndex}
                 canSplit={lineIndex > 0}
-                charWidthPx={charWidthPx}
+                cellCount={Math.max(1, Math.round(beatsSpans.get(line.uiKey) ?? 1))}
+                beatsPerBarCount={beatsPerBarCount}
                 highlightedChordUiKey={highlightedChordUiKey}
-                onLyricsChange={(lyrics) => onLyricsChange(line.uiKey, lyrics)}
                 onStartBeatChange={(startBeatValue) =>
                   onLineStartBeatChange(line.uiKey, startBeatValue)
                 }
                 onRemoveLine={() => onRemoveLine(line.uiKey)}
                 onSplitHere={() => onSplitAt(lineIndex)}
-                onAddChord={(charOffset) => onAddChord(line.uiKey, charOffset)}
+                onUpdateCellText={(cellIndex, text) =>
+                  onUpdateCellText(line.uiKey, cellIndex, text)
+                }
+                onAddChordAtCell={(cellIndex) => onAddChordAtCell(line.uiKey, cellIndex)}
                 onUpdateChord={(chordUiKey, patch) => onUpdateChord(line.uiKey, chordUiKey, patch)}
                 onRemoveChord={(chordUiKey) => onRemoveChord(line.uiKey, chordUiKey)}
                 registerChordNode={registerChordNode}
