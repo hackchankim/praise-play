@@ -1,26 +1,26 @@
 // 비전 LLM 악보 추출 결과 스키마 (Task 016).
-// 텍스트 판독(가사·코드·조표)과 공간 추론/카운팅(마디·박자 구조)은 신뢰도가 달라
-// 별도 호출로 분리한다.
+// 텍스트 판독(가사·코드·조표)과 공간 추론/카운팅(마디·박자 구조, 코드의 글자 위치)은 신뢰도가
+// 달라 별도 호출로 분리한다.
 //
-// 구조 추출(2번 항목)은 자기 구획/줄 경계를 스스로 매기지 않는다(Task 032) — 텍스트 추출
-// 결과로 이미 확정된 줄 목록을 고정 입력으로 받아(extract.ts의 flattenTextExtractionLines
-// 참고) 그 순서 그대로 대응하는 평평한 배열로만 답한다. 원래는 구조 추출도 sectionIndex/
-// lineIndex를 스스로 매겨 텍스트 추출 결과와 그 좌표로 대응시켰는데, 두 호출이 이미지를 보고
-// 독립적으로 구획을 나누다 보니(게다가 공간 판단은 이 파이프라인에서 가장 신뢰도가 낮다)
-// 조금만 다르게 나눠도 좌표 전체가 어긋나 실사용에서 곡 전체가 needsReview로 뒤덮이는 사례가
-// 나왔다(실측 확인). 구조 추출의 자체 구획 판단은 애초에 최종 저장값에 전혀 쓰이지 않았으므로
-// (실제로 저장되는 sections/lines는 항상 텍스트 추출 결과 기준), 그 판단 자체를 없애 매칭
-// 실패 가능성을 구조적으로 제거했다.
+// 구조 추출(2번 항목)과 코드 위치 추출(3번 항목)은 둘 다 자기 구획/줄 경계를 스스로 매기지
+// 않는다(Task 032) — 텍스트 추출 결과로 이미 확정된 줄 목록을 고정 입력으로 받아(extract.ts의
+// flattenTextExtractionLines 참고) 그 순서 그대로 대응하는 평평한 배열로만 답한다. 원래는 둘 다
+// sectionIndex/lineIndex를 스스로 매기거나(구조 추출), 텍스트 추출 두 호출이 각자 독립적으로
+// 구획까지 다시 판단했는데(코드 위치 self-consistency), 조금만 다르게 나눠도 좌표 전체가 어긋나
+// 실사용에서 곡 전체가 needsReview로 뒤덮이는 사례가 나왔다(실측 확인). 이 판단들은 애초에 최종
+// 저장값에 전혀 쓰이지 않았으므로(실제로 저장되는 sections/lines는 항상 텍스트 추출 결과 기준),
+// 그 판단 자체를 없애 매칭 실패 가능성을 구조적으로 제거했다.
 
 import { z } from "zod";
 import { SECTION_TYPES } from "@/lib/song-model/types";
 
 // ===== 1) 텍스트 추출: 가사·코드·조표 =====
+// charOffset(코드의 글자 위치)은 여기서 답하지 않는다 — 픽셀 정렬을 세어야 하는 공간 판단이라
+// (실사용 피드백으로 이 값이 자주 부정확했다) 아래 3번 항목의 전용 self-consistency 호출로
+// 분리했다. 이 호출은 순수하게 "무엇이 적혀 있는가"만 읽는다.
 
 export const textExtractionChordSchema = z.object({
   chord: z.string().min(1),
-  /** 가사 문자열 내 삽입 위치 (0-indexed) */
-  charOffset: z.number().int().min(0),
 });
 
 export const textExtractionLineSchema = z.object({
@@ -74,3 +74,28 @@ export const structureExtractionResultSchema = z.object({
 });
 
 export type StructureExtractionResult = z.infer<typeof structureExtractionResultSchema>;
+
+// ===== 3) 코드 위치 추출: charOffset (Task 032) =====
+// beatsInLine/chordBeats(구조 추출)와 정확히 같은 원리다 — 텍스트 추출(primary)이 확정한
+// 줄+코드 목록을 고정 입력으로 받아, 그 순서 그대로 대응하는 평평한 배열로만 답한다. 이 값도
+// 2번의 self-consistency 호출이 정확히 일치할 때만 신뢰한다(정수 글자 인덱스라 오차범위를 둘
+// 이유가 없다 — merge-extraction.ts 참고).
+
+export const charOffsetLineSchema = z.object({
+  /**
+   * 입력으로 준 이 줄의 코드 목록과 같은 개수·순서로, 각 코드가 이 줄 가사 문자열 내에서
+   * 걸리는 위치(0-indexed 문자 인덱스)를 나열한 값. 코드가 하나도 없는 줄이면 빈 배열로
+   * 두거나 생략하라.
+   */
+  charOffsets: z.array(z.number().int().min(0)).optional(),
+});
+
+export const charOffsetResultSchema = z.object({
+  /**
+   * 입력으로 준 줄 목록(extract.ts의 flattenTextExtractionLines)과 정확히 같은 개수·순서여야
+   * 한다. structureExtractionResultSchema.lines와 같은 이유로 min(1)을 두지 않는다.
+   */
+  lines: z.array(charOffsetLineSchema),
+});
+
+export type CharOffsetResult = z.infer<typeof charOffsetResultSchema>;
