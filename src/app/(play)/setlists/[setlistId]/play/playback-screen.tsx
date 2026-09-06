@@ -2,13 +2,24 @@
 
 import { useRef } from "react";
 import Link from "next/link";
-import { Home, Locate, MonitorSmartphone, Pause, Play, SkipForward, X } from "lucide-react";
+import {
+  Home,
+  Locate,
+  MonitorSmartphone,
+  MonitorX,
+  Pause,
+  Play,
+  SkipForward,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { SectionBadge } from "@/components/domain/section-badge";
 import { cn } from "@/lib/utils";
 import { routes } from "@/lib/routes";
+import type { WakeLockStatus } from "@/lib/playback/wake-lock";
 import type { ActivationStatus } from "./use-live-playback";
 import {
   computeSectionDisplayLabels,
@@ -31,6 +42,7 @@ interface PlaybackScreenProps {
   queue: QueueEntry[];
   state: PlaybackState;
   activationStatus: ActivationStatus;
+  wakeLockStatus: WakeLockStatus;
   onTogglePlay: () => void;
   onToggleLoop: () => void;
   onJumpTo: (songIndex: number, sectionIndex: number, targetBeat?: number) => void;
@@ -41,6 +53,7 @@ export function PlaybackScreen({
   queue,
   state,
   activationStatus,
+  wakeLockStatus,
   onTogglePlay,
   onToggleLoop,
   onJumpTo,
@@ -107,10 +120,28 @@ export function PlaybackScreen({
           <Badge variant="secondary">
             {queue.length}곡 중 {state.songIndex + 1}번째
           </Badge>
-          <Badge variant="outline" className="gap-1">
-            <MonitorSmartphone className="size-3" />
-            화면 꺼짐 방지 켜짐
-          </Badge>
+          {/* Task 025(F014): 재생 중일 때만 실제 Wake Lock 상태를 보여준다 — 재생 전/일시정지
+              중엔 애초에 켜 둘 이유가 없어(wakeLockRef가 isPlaying과 1:1로 맞춘다, use-live-
+              playback.ts) "inactive"가 정상이므로 배지 자체를 숨긴다. 미지원 브라우저와 권한
+              거부(error)는 구분해서 사용자가 왜 화면이 꺼질 수 있는지 알 수 있게 한다. */}
+          {wakeLockStatus === "active" && (
+            <Badge variant="outline" className="gap-1">
+              <MonitorSmartphone className="size-3" />
+              화면 꺼짐 방지 켜짐
+            </Badge>
+          )}
+          {wakeLockStatus === "unsupported" && (
+            <Badge variant="outline" className="gap-1 text-muted-foreground">
+              <MonitorX className="size-3" />
+              화면 꺼짐 방지 미지원
+            </Badge>
+          )}
+          {wakeLockStatus === "error" && (
+            <Badge variant="outline" className="gap-1 text-destructive">
+              <TriangleAlert className="size-3" />
+              화면 꺼짐 방지 실패
+            </Badge>
+          )}
           <Link
             href={routes.home()}
             className={cn(buttonVariants({ variant: "ghost", size: "sm" }))}
@@ -229,15 +260,26 @@ export function PlaybackScreen({
             size="playback-icon"
             onClick={onTogglePlay}
             disabled={activationStatus === "activating"}
-            aria-label={state.isPlaying ? "일시정지" : "재생"}
+            aria-label={
+              state.audioInterrupted ? "재생 재개" : state.isPlaying ? "일시정지" : "재생"
+            }
             className="rounded-full"
           >
-            {state.isPlaying ? <Pause /> : <Play />}
+            {/* audioInterrupted면 isPlaying은 여전히 true다(smplr 스케줄러 자체는 멈춘 적이
+                없다, Task 025) — 하지만 실제로는 소리가 안 나가는 상태라 "일시정지" 아이콘을
+                보여주면 다시 탭했을 때 재생이 아니라 일시정지가 될 것처럼 보인다. 실제로
+                이 탭이 할 일(재개)에 맞춰 재생 아이콘을 보여준다. */}
+            {state.audioInterrupted ? <Play /> : state.isPlaying ? <Pause /> : <Play />}
           </Button>
         </div>
         {activationStatus === "failed" && (
           <p className="text-center text-xs text-destructive">
             오디오를 활성화하지 못했습니다. 재생 버튼을 다시 눌러주세요.
+          </p>
+        )}
+        {state.audioInterrupted && (
+          <p className="text-center text-xs text-destructive">
+            오디오가 일시 중단됐습니다. 재생 버튼을 다시 눌러주세요.
           </p>
         )}
       </div>

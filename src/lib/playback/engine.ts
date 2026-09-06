@@ -90,6 +90,15 @@ export interface PlaybackEngineOptions {
    * 즉시 "done"으로 한 번만 온다.
    */
   onLoadProgress?: (event: AssetLoadEvent) => void;
+  /**
+   * 재생 중이어야 하는데 AudioContext가 suspended에서 벗어나지 못했을 때 호출된다(Task 025,
+   * F014) — handleContextStateChange의 자동 재개 시도 자체가 실패한 경우다. tab이 계속 보이는
+   * 상태에서 일어나는 iOS 오디오 세션 인터럽션(전화 수신, Siri, 다른 앱의 오디오 점유 등)은
+   * visibilitychange를 전혀 발생시키지 않으므로, 호출부(use-live-playback.ts)가
+   * visibilitychange 핸들러 안에서만 실패를 감지하면 이 경우를 영영 놓친다 — 그래서 엔진
+   * 스스로도 실패를 알려야 한다.
+   */
+  onAudioInterrupted?: () => void;
 }
 
 const POSITION_POLL_MS = 100;
@@ -137,6 +146,35 @@ export class PlaybackEngine {
    * 가능함을 검증). activate()가 각 await 지점 이후 이 플래그를 확인해 조기 종료한다.
    */
   private disposed = false;
+
+  /**
+   * iOS Safari는 화면 잠금·백그라운드 전환 시 AudioContext를 예고 없이 suspend한다(Task 025,
+   * F014) — smplr의 setInterval 기반 스케줄러 자체는 계속 돌아가므로(this.sequencer.state는
+   * 여전히 "playing") 겉보기엔 재생 중인데 실제로는 소리가 전혀 안 나가는 상태가 된다. 이
+   * statechange 리스너가 "재생 중이어야 하는데 context가 suspended로 바뀐" 순간을 감지해 즉시
+   * 재개를 시도한다. resume()이 사용자 제스처 없는 호출이라 iOS가 조용히 무시하거나 거부할 수
+   * 있어(스펙상 보장 없음, 자동재생 정책상 reject될 수도 있다 — code review 지적: 여기서
+   * .catch() 없이 던지면 미처리 프라미스 거부가 된다), 실패하면 onAudioInterrupted로 알린다.
+   *
+   * 이 알림이 필요한 이유: 실패를 여기서 그냥 삼키면, 탭이 계속 보이는 상태로 일어나는 iOS
+   * 오디오 세션 인터럽션(전화 수신, Siri, 다른 앱의 오디오 점유 등 — visibilitychange가 전혀
+   * 발생하지 않는다)을 감지할 방법이 아예 없어진다(code review 지적) — visibilitychange
+   * 핸들러(use-live-playback.ts)만 보고 있으면 이 경우를 영영 놓친다.
+   */
+  private readonly handleContextStateChange = (): void => {
+    if (this.disposed || !this.context) return;
+    if (this.context.state === "suspended" && this.sequencer?.state === "playing") {
+      this.context
+        .resume()
+        .then(() => {
+          if (this.disposed || !this.context) return;
+          if (this.context.state !== "running") this.options.onAudioInterrupted?.();
+        })
+        .catch(() => {
+          if (!this.disposed) this.options.onAudioInterrupted?.();
+        });
+    }
+  };
 
   constructor(
     tracks: InstrumentTrack[],
@@ -268,6 +306,7 @@ export class PlaybackEngine {
         return;
       }
 
+      context.addEventListener("statechange", this.handleContextStateChange);
       this.context = context;
       this.instruments = loaded;
       this.failedInstruments = failed;
@@ -491,6 +530,21 @@ export class PlaybackEngine {
   }
 
   /**
+   * context가 suspended면 재개를 시도하고, 시도 후 실제로 running인지 돌려준다(Task 025,
+   * F014). handleContextStateChange가 대부분의 경우를 자동으로 처리하지만, 그 자동 재개 자체가
+   * 사용자 제스처 없는 호출이라 iOS Safari가 조용히 무시할 수 있다(스펙상 보장 없음) — 그래서
+   * 탭이 다시 보이는 시점(visibilitychange)에 호출부가 이 메서드로 한 번 더(여전히 제스처는
+   * 아니지만) 시도하고, 그래도 running이 아니면 반환값으로 알려줘 "재생 버튼을 다시 눌러달라"는
+   * 안내로 넘어갈 수 있게 한다 — 다음 재생 버튼 클릭은 진짜 사용자 제스처이므로 그때는 확실히
+   * 재개된다.
+   */
+  async resumeIfNeeded(): Promise<boolean> {
+    if (!this.context) return false;
+    if (this.context.state === "suspended") await this.context.resume().catch(() => {});
+    return this.context.state === "running";
+  }
+
+  /**
    * 지금 이 순간의 정확한 위치(절대 beat). onPositionChange 콜백은 최대 100ms 지연될 수 있어,
    * "지금 위치 기준으로 다음 마디 경계를 계산"해야 하는 지연 점프 스케줄링(section-jump.ts)은
    * 폴링된 값 대신 이 게터로 직접 조회한 값을 써야 한다.
@@ -531,6 +585,7 @@ export class PlaybackEngine {
     this.disposed = true;
     this.stopPositionPolling();
     this.sequencer?.stop();
+    this.context?.removeEventListener("statechange", this.handleContextStateChange);
     this.instruments = {};
     this.sequencer = null;
     this.context = null;

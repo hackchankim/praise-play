@@ -78,6 +78,7 @@ export function PlayView({ setlistId }: PlayViewProps) {
   const {
     state,
     activationStatus,
+    wakeLockStatus,
     loadProgress,
     preloadAndActivate,
     togglePlay,
@@ -220,6 +221,7 @@ export function PlayView({ setlistId }: PlayViewProps) {
       queue={queue}
       state={state}
       activationStatus={activationStatus}
+      wakeLockStatus={wakeLockStatus}
       onTogglePlay={togglePlay}
       onToggleLoop={toggleLoop}
       onJumpTo={jumpTo}

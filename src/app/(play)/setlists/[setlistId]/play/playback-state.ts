@@ -32,6 +32,14 @@ export interface PlaybackState {
   pending: PendingTransition | null;
   /** 세트리스트 마지막 곡의 마지막 섹션이 자연히 끝났는지. */
   ended: boolean;
+  /**
+   * 재생 중이어야 하는데 AudioContext가 suspended에서 자동으로 재개되지 못한 상태(Task 025,
+   * F014) — iOS Safari가 화면 잠금·백그라운드 복귀 후 사용자 제스처 없는 resume() 호출을
+   * 조용히 무시할 때 발생한다. smplr 스케줄러 자체는 계속 돌아가(isPlaying은 그대로 true)
+   * 겉보기엔 재생 중인데 소리만 안 나가므로, 이 플래그로 "재생 버튼을 다시 눌러달라"는 안내를
+   * 보여준다 — 다음 클릭은 진짜 사용자 제스처라 확실히 재개된다.
+   */
+  audioInterrupted: boolean;
 }
 
 export function createInitialPlaybackState(): PlaybackState {
@@ -42,6 +50,7 @@ export function createInitialPlaybackState(): PlaybackState {
     loopSection: false,
     pending: null,
     ended: false,
+    audioInterrupted: false,
   };
 }
 
