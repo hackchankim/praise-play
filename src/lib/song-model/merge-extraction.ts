@@ -22,7 +22,7 @@
 // 섹션의 repeat_target_section_id는 여기서 채우지 않는다(항상 null) — 도돌이표 기반 섹션 반복
 // 추론은 Task 017(섹션 자동 추론기)의 책임이다.
 import { createId } from "@/lib/repositories/mock-utils";
-import { estimateBeatOffset } from "@/lib/song-model/beat-offset";
+import { estimateBeatOffset, quantizeToHalfBeat } from "@/lib/song-model/beat-offset";
 import type {
   StructureExtractionResult,
   TextExtractionResult,
@@ -32,7 +32,11 @@ import type { SectionType } from "@/lib/song-model/types";
 /** 구조 추출이 이 줄을 놓쳤을 때 쓰는 대체값. 4/4 기준 한 마디에 해당하는 무난한 기본값이다. */
 const DEFAULT_BEATS_PER_LINE = 4;
 
-/** 이 오차 이내면 self-consistency 두 호출이 사실상 같은 값을 말한 것으로 본다(부동소수 오차 흡수). */
+/**
+ * beatsInLine(줄 전체가 차지하는 박 수) self-consistency에만 쓰는 오차범위다. chordBeats(코드별
+ * 박 위치)는 이제 이 허용치 대신 quantizeToHalfBeat 기반 그리드 비교를 쓴다(agreeingChordBeats
+ * 참고, 그리고 그 그리드를 쓰는 이유는 beat-offset.ts의 quantizeToHalfBeat 주석 참고).
+ */
 const BEATS_MATCH_TOLERANCE = 0.5;
 
 export interface MergedChordEvent {
@@ -82,13 +86,27 @@ interface StructureLineLookup {
   chordBeats: number[] | null;
 }
 
-/** a/b가 길이까지 정확히 같고 각 원소가 오차범위 안에서 같으면 a를(신뢰할 수 있는 값으로) 반환한다. */
+/**
+ * a/b가 길이까지 정확히 같고, 각 원소를 반박(0.5) 그리드로 양자화했을 때 정확히 같으면 그
+ * 양자화된 값을 반환한다 — "원값이 대충 비슷한가"(예전의 ±0.5 오차범위)가 아니라 "같은 그리드
+ * 위치를 말했는가"를 기준으로 삼는다(왜 그리드 단위인지는 beat-offset.ts의 quantizeToHalfBeat
+ * 주석 참고).
+ *
+ * 그리드 스냅은 새로운 위험을 하나 만든다 — 같은 줄의 서로 다른 코드 두 개가 원래는 구분되는
+ * 값이었는데(예: 2.1, 2.2) 그리드에 스냅하면 우연히 같은 값(2.0)으로 겹칠 수 있다(code review
+ * 지적, 실측 확인 — 겹치면 뒤 코드가 deriveCells의 "칸당 코드 1개" 규칙에 밀려 화면에 아예 안
+ * 보이는데도 needsReview 없이 조용히 저장됐다). 이 파일의 다른 모든 신뢰성 판정이 줄 단위이므로
+ * (구획·charOffset 등), 같은 기준으로 겹침이 하나라도 있으면 그 줄 chordBeats 전체를 신뢰하지
+ * 않는다 — 일부만 골라 믿을 방법이 없다.
+ */
 function agreeingChordBeats(a: number[] | undefined, b: number[] | undefined): number[] | null {
   if (!a || !b || a.length !== b.length) return null;
-  const allWithinTolerance = a.every(
-    (beat, index) => Math.abs(beat - b[index]!) <= BEATS_MATCH_TOLERANCE,
-  );
-  return allWithinTolerance ? a : null;
+  const quantizedA = a.map(quantizeToHalfBeat);
+  const quantizedB = b.map(quantizeToHalfBeat);
+  const allMatch = quantizedA.every((beat, index) => beat === quantizedB[index]);
+  if (!allMatch) return null;
+  const hasCollision = new Set(quantizedA).size !== quantizedA.length;
+  return hasCollision ? null : quantizedA;
 }
 
 /**
@@ -239,9 +257,12 @@ export function mergeExtractionResults(
         chord: chord.chord,
         charOffset: chord.charOffset,
         // 마디 구조를 근거로 한 코드별 박 위치를 신뢰할 수 있으면 그대로 쓰고(범위 밖이면
-        // clamp), 그렇지 않으면 예전의 글자 위치 비례 추정으로 되돌아간다.
+        // clamp), 그렇지 않으면 예전의 글자 위치 비례 추정으로 되돌아간다. clamp 상한인
+        // beatsInLine 자체는 그리드에 맞다는 보장이 없다(구조 추출 스키마가 정수·반박 단위를
+        // 강제하지 않는다) — clamp로 잘린 뒤에도 다시 그리드로 스냅해야, 이미 agreeingChordBeats
+        // 에서 그리드에 맞춰 둔 값이 clamp 한 번으로 도로 어긋나는 일이 없다(code review 지적).
         beatOffset: chordBeats
-          ? Math.max(0, Math.min(chordBeats[chordIndex]!, beatsInLine))
+          ? quantizeToHalfBeat(Math.max(0, Math.min(chordBeats[chordIndex]!, beatsInLine)))
           : estimateBeatOffset(
               chord.charOffset,
               line.lyrics.length,

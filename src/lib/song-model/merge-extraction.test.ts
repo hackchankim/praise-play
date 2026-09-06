@@ -64,6 +64,31 @@ describe("mergeExtractionResults — chordBeats(마디 구조 근거 코드별 �
     expect(chords.every((c) => c.needsReview)).toBe(true);
   });
 
+  it("그리드 스냅으로 서로 다른 코드 두 개가 같은 값에 겹치면(예: 2.1과 2.2 모두 2.0으로 스냅) 신뢰하지 않고 needsReview를 세운다", () => {
+    // primary/secondary 모두 [2.1, 2.2]로 self-consistent하지만, 반박 그리드로 스냅하면 두
+    // 코드 모두 2.0이 되어 서로 다른 코드였다는 정보가 사라진다 — 이대로 통과시키면 두 코드가
+    // 화면에서 같은 칸을 두고 겹친다(code review 지적).
+    const text = textResult([
+      { chord: "G", charOffset: 0 },
+      { chord: "C", charOffset: 5 },
+    ]);
+    const primary = structureResult(8, [2.1, 2.2]);
+    const secondary = structureResult(8, [2.1, 2.2]);
+
+    const result = mergeExtractionResults(text, text, primary, secondary);
+    const chords = result.sections[0]!.lines[0]!.chordEvents;
+    expect(chords.every((c) => c.needsReview)).toBe(true);
+  });
+
+  it("chordBeats가 beatsInLine이 그리드에 안 맞아도(예: 4.3) clamp 후 값은 항상 그리드에 남는다", () => {
+    const text = textResult([{ chord: "G", charOffset: 0 }]);
+    const primary = structureResult(4.3, [5]);
+    const secondary = structureResult(4.3, [5]);
+
+    const result = mergeExtractionResults(text, text, primary, secondary);
+    expect(result.sections[0]!.lines[0]!.chordEvents[0]!.beatOffset).toBe(4.5);
+  });
+
   it("chordBeats가 아예 없으면(구조 추출이 이 기능을 답하지 않음) 글자 비례 추정으로 되돌아가고 needsReview를 세운다", () => {
     const text = textResult([{ chord: "G", charOffset: 0 }]);
     const primary = structureResult(8);
@@ -111,6 +136,30 @@ describe("mergeExtractionResults — chordBeats(마디 구조 근거 코드별 �
     expect(lines[1]!.startBeat).toBe(4);
     expect(lines[1]!.chordEvents[0]!.beatOffset).toBe(1);
     expect(lines[1]!.chordEvents[0]!.needsReview).toBe(false);
+  });
+
+  it("원값은 다르지만 반박(0.5) 그리드로 스냅하면 같은 위치면 일치로 보고 스냅된 값을 쓴다", () => {
+    // 2.43과 2.61은 원값 자체는 다르지만 둘 다 그리드 위치 2.5를 말한 것으로 봐야 한다.
+    const text = textResult([{ chord: "G", charOffset: 0 }]);
+    const primary = structureResult(8, [2.43]);
+    const secondary = structureResult(8, [2.61]);
+
+    const result = mergeExtractionResults(text, text, primary, secondary);
+    const chords = result.sections[0]!.lines[0]!.chordEvents;
+    expect(chords[0]!.beatOffset).toBe(2.5);
+    expect(chords[0]!.needsReview).toBe(false);
+  });
+
+  it("옛 오차범위(±0.5) 안에 들어도 그리드로 스냅했을 때 서로 다른 위치면 불일치로 본다", () => {
+    // 2.1(→그리드 2.0)과 2.4(→그리드 2.5)는 원값 차이(0.3)로는 옛 오차범위를 통과했지만,
+    // 실제로는 정박과 반박이라는 서로 다른 결정이므로 이제는 불일치로 봐야 한다.
+    const text = textResult([{ chord: "G", charOffset: 0 }]);
+    const primary = structureResult(8, [2.1]);
+    const secondary = structureResult(8, [2.4]);
+
+    const result = mergeExtractionResults(text, text, primary, secondary);
+    const chords = result.sections[0]!.lines[0]!.chordEvents;
+    expect(chords[0]!.needsReview).toBe(true);
   });
 
   it("chordBeats 값이 beatsInLine을 넘으면 그 줄의 박자 폭 안으로 자른다", () => {
