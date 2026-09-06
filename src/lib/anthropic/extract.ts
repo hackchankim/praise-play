@@ -31,7 +31,7 @@ const MAX_OUTPUT_TOKENS = 16384;
 //
 // 텍스트 추출(가사·코드·조표를 있는 그대로 옮겨 적는 기계적 판독)은 열린 추론이 필요
 // 없으므로 여기서만 thinking을 아예 꺼서 max_tokens 전체가 답변에만 쓰이게 한다. 구조 추출은
-// 다르다 — STRUCTURE_EXTRACTION_PROMPT 자체가 "마디 단위로 나눠서 계산하라"는 다단계 산술을
+// 다르다 — buildStructureExtractionPrompt 자체가 "마디 단위로 나눠서 계산하라"는 다단계 산술을
 // 명시적으로 요구하는, 이 파이프라인에서 정확도가 가장 취약한 부분이다(docs/PLAN.md의 공간
 // 추론 신뢰도 유의사항, 그리고 이번 세션에서 chordBeats·마디 단위 카운팅 지시를 여러 차례
 // 보강한 이유이기도 하다) — thinking을 꺼서 모델의 단계별 계산 능력까지 함께 없애면 truncation
@@ -73,11 +73,61 @@ function assertNotTruncated(stopReason: string | null, label: string): void {
   }
 }
 
+/**
+ * 구조 추출이 주어진 줄 목록과 다른 개수로 답하면(지시를 어기고 줄을 합치거나 빠뜨림)
+ * merge-extraction.ts의 buildStructureLookup이 이 결과 전체를 통째로 버린다 — 그 대가가
+ * 곡 전체 needsReview인 만큼(code review 지적), 여기서 미리 잡아 일반 Error로 던져 Inngest가
+ * 재시도하게 한다. "이미 정해진 N개 줄에 정확히 N개로 답하라"는 기계적 지시라 한 번 어겼다고
+ * 다시 어길 확률이 높은 종류의 실수가 아니므로(예전의 "스스로 구획을 판단하라"는 지시와 달리),
+ * 재시도가 실제로 도움될 가능성이 있다 — assertNotTruncated처럼 NonRetriableError로 즉시
+ * 포기하지 않는다.
+ */
+function assertLineCountMatches(
+  result: StructureExtractionResult,
+  expectedLineCount: number,
+): void {
+  if (result.lines.length !== expectedLineCount) {
+    throw new Error(
+      `구조 추출이 주어진 줄 개수(${expectedLineCount})와 다른 개수(${result.lines.length})로 응답했습니다.`,
+    );
+  }
+}
+
 function buildImageBlocks(images: ExtractionImage[]): ImageBlockParam[] {
   return images.map((image) => ({
     type: "image",
     source: { type: "base64", media_type: image.mediaType, data: image.base64 },
   }));
+}
+
+interface StructureInputLine {
+  lyrics: string;
+  /** 코드 기호만, 왼쪽부터 나타나는 순서대로 — charOffset은 구조 추출과 무관하므로 뺀다. */
+  chords: string[];
+}
+
+/**
+ * 텍스트 추출 결과를 구획 구분 없이 하나의 순서 있는 줄 목록으로 편다 — 구조 추출은 이제 이
+ * 순서를 고정 입력으로 받아 그대로 따르기만 하면 되고(extraction-schemas.ts 헤더 주석 참고),
+ * 스스로 구획을 나눌 필요가 없다.
+ */
+function flattenTextExtractionLines(text: TextExtractionResult): StructureInputLine[] {
+  return text.sections.flatMap((section) =>
+    section.lines.map((line) => ({
+      lyrics: line.lyrics,
+      chords: line.chords.map((chord) => chord.chord),
+    })),
+  );
+}
+
+function buildStructureInputText(lines: StructureInputLine[]): string {
+  return lines
+    .map((line, index) => {
+      const lyricsText = line.lyrics.length > 0 ? `"${line.lyrics}"` : "(가사 없음 — 간주/연주)";
+      const chordList = line.chords.length > 0 ? line.chords.join(", ") : "(코드 없음)";
+      return `${index}: 가사=${lyricsText} / 코드(왼쪽부터 순서대로)=[${chordList}]`;
+    })
+    .join("\n");
 }
 
 const TEXT_EXTRACTION_PROMPT = `첨부된 이미지는 찬양/CCM 리드시트(가사와 코드가 함께 표기된 악보) 사진이다. 여러 장이면 같은 곡의 연속된 페이지이므로 순서대로 읽어 하나의 곡으로 합쳐라.
@@ -99,34 +149,39 @@ const TEXT_EXTRACTION_PROMPT = `첨부된 이미지는 찬양/CCM 리드시트(�
   길게 끄는 음표(새 가사 글자가 붙지 않는 음표)는 세지 마라.
 - 이미지에 실제로 보이는 내용만 추출하라. 판독 불가능하거나 가려진 부분을 추측으로 지어내지 마라.`;
 
-// 여기에 TEXT_EXTRACTION_PROMPT와 똑같은 "연속된 줄을 하나의 구획으로 묶어라" 지시를 추가하지
-// 말 것 — 실측 확인: 그 문구를 넣으면 Anthropic 콘텐츠 필터링 정책에 걸려 요청 자체가
-// 400(Output blocked by content filtering policy)으로 거부되는 빈도가 뚜렷이 높아진다(직접
-// 재현: 같은 이미지로 그 문구 포함 3/3 실패 → 문구 제거 즉시 성공). 대신 텍스트 추출 쪽의 구획
-// 나누기만 신뢰한다(실제로 저장되는 sections/lines는 텍스트 추출 결과 기준이다).
-//
-// 이 프롬프트 지시가 비대칭이라 구조 추출(2회)이 텍스트 추출과 다른 구획 수로 수렴할 수 있다 —
-// 이땐 sectionIndex:lineIndex 키가 서로 다른 물리적 줄을 가리키게 된다. primary/secondary
-// 두 구조 추출 호출끼리의 self-consistency 비교(둘이 서로 일치하는가)만으로는 이걸 못 잡는다 —
-// 둘 다 텍스트 추출과 다르게(하지만 서로는 같게) 쪼갰다면 그 비교는 통과해버린다(code review
-// 지적, 실제로 그런 상황이 되도록 가짜 응답을 만들어 재현 확인). 그래서 merge-extraction.ts가
-// 구획별 줄 개수를 텍스트 추출 결과와도 대조해서, 개수가 다른 구획은 두 구조 추출이 서로
-// 일치하더라도 통째로 신뢰하지 않는다(sectionLineCounts 참고) — 프롬프트만으로는 완전히 막을
-// 수 없는 문제라 병합 단계에서 한 번 더 방어한다.
-const STRUCTURE_EXTRACTION_PROMPT = `같은 리드시트 이미지에서 이번에는 마디/박자 구조만 집중해서 세어라. 가사·코드 판독보다 공간적 카운팅(줄이 몇 박인지, 마디 경계가 어디인지)이 더 어렵다는 걸 알고 있으니, 각 줄의 코드 배치 간격과 박자 기호를 근거로 신중하게 다시 세어라.
+// 텍스트 추출과 별개로 구조 추출이 스스로 구획/줄 경계를 다시 판단하게 하면(예전 방식), 두
+// 결과가 이미지를 보고 각자 독립적으로 나눈 구획 수가 어긋날 위험이 늘 있었다(공간 판단은 이
+// 파이프라인에서 가장 신뢰도가 낮은 부분인 데다, TEXT_EXTRACTION_PROMPT의 "연속된 줄을 하나의
+// 구획으로 묶어라" 지시를 여기 그대로 추가하면 Anthropic 콘텐츠 필터링에 걸려 요청 자체가
+// 400으로 거부되는 빈도가 뚜렷이 높아져 — 실측 확인 — 그 지시조차 넣을 수 없었다). 그 결과
+// 구획 좌표가 조금만 어긋나도 그 아래 모든 줄이 도미노로 매칭 실패해 needsReview로 뒤덮이는
+// 사례가 실사용에서 나왔다(실제 이미지로 재현 확인 — 텍스트/구조 추출 4회 호출이 전부 다른
+// 구획·줄 개수로 나눔). 지금은 그 판단을 아예 시키지 않는다 — 텍스트 추출(primary) 결과로
+// 이미 확정된 줄 목록을 buildStructureInputText로 프롬프트에 그대로 박아 넣고, "이 순서를
+// 그대로 따르라"고만 지시한다. "묶어라" 같은 subjective 판단 지시가 아니라 이미 정해진 목록을
+// 그대로 따르라는 기계적 지시라 콘텐츠 필터링도 재발하지 않음을 실측 확인했다.
+function buildStructureExtractionPrompt(inputLines: StructureInputLine[]): string {
+  return `같은 리드시트 이미지에서 이번에는 마디/박자 구조만 집중해서 세어라. 가사·코드 판독보다 공간적 카운팅(줄이 몇 박인지, 마디 경계가 어디인지)이 더 어렵다는 걸 알고 있으니, 각 줄의 코드 배치 간격과 박자 기호를 근거로 신중하게 다시 세어라.
 
-다음을 추출하라:
+이 리드시트는 이미 다음과 같이 줄 단위로 정리되어 있다(줄 번호, 가사, 그 줄에 나타나는 코드 목록):
+${buildStructureInputText(inputLines)}
+
+너는 이 줄 구분을 그대로 따라야 한다 — 구획을 새로 나누거나 줄을 합치거나 쪼개지 마라. lines
+배열은 위 목록과 정확히 같은 개수(${inputLines.length}개), 같은 순서로 답하라 — 배열의 n번째
+원소가 위 목록의 n번째 줄에 대응한다.
+
+결과 전체에 딱 한 번만 답하면 되는 값(줄마다 반복하지 마라):
 - tempo: BPM 추정치. 악보에 명시돼 있으면 그 값, 없으면 곡 스타일로 합리적으로 추정하라.
 - timeSignature: 박자 기호 (예: "4/4", "6/8").
-- sections: 가사와 동일한 구획 순서로 나열하되, sectionIndex는 0부터 시작하는 구획 순번이다.
-  각 구획의 각 줄마다 lineIndex(그 구획 내에서 0부터 시작하는 줄 순번)와 beatsInLine(그 줄 전체가
-  차지하는 박 수)을 산출하라.
+
+lines 배열의 각 원소(=각 줄)마다 다음을 추출하라:
+- beatsInLine: 그 줄 전체가 차지하는 박 수.
 - 그 줄에 왼쪽부터 순서대로 나타나는 코드 기호마다, 그 코드가 이 줄 시작을 0으로 했을 때 몇 번째
   박에 걸리는지(소수 가능, 예: 2.5)를 chordBeats 배열로 답하라. 가사 글자 수가 아니라 마디 경계와
   박자 기호, 그리고 그 코드 기호가 음표·가사 위 어느 위치에 적혀 있는지를 근거로 세어라 — 코드
   기호 사이 간격이 넓으면(예: 한 코드가 마디 전체를 차지) 그만큼 뒤 코드의 박 위치도 커야 한다.
-  배열의 길이는 그 줄에 보이는 코드 기호 개수와 반드시 같아야 하고, 순서도 왼쪽부터 나타나는
-  순서와 같아야 한다. 코드가 하나도 없는 줄이면 빈 배열로 두거나 생략하라.
+  배열의 길이는 위 목록에서 알려준 그 줄의 코드 개수와 반드시 같아야 하고, 순서도 같아야 한다.
+  코드가 하나도 없는 줄이면 빈 배열로 두거나 생략하라.
   이 줄이 여러 마디로 이어져 있으면, 줄 전체를 한 번에 누적해서 세지 말고 마디 단위로 나눠서
   계산하라: 한 마디당 박수는 박자 기호의 분자 값 그대로다(예: 4/4→4박, 3/4→3박, 6/8→6박 — 실제
   연주 리듬과 무관하게 이 숫자를 쓴다). 이 줄이 총 몇 마디인지를 먼저 정하고(줄 시작이 마디
@@ -134,7 +189,8 @@ const STRUCTURE_EXTRACTION_PROMPT = `같은 리드시트 이미지에서 이번�
   안에서 코드가 몇 번째 박에 있는지(그 마디 시작을 0으로) 센 다음, 그 앞에 있는 마디들의 박수
   합을 더해 최종 chordBeats 값을 구하라 — 마디마다 새로 세면 긴 줄에서 누적 오차가 쌓이지 않는다.
 - 도돌이표(𝄆𝄇, D.S., Coda 등) 표기로 되돌아가는 지점이 있으면 그 줄에 isRepeatStart: true와
-  repeatTargetLineIndex(되돌아갈 대상 줄의 lineIndex — 같은 구획 내 기준)를 표시하라. 없으면 생략하라.`;
+  repeatTargetLineIndex(되돌아갈 대상 줄의 번호 — 위 목록의 줄 번호 기준)를 표시하라. 없으면 생략하라.`;
+}
 
 export async function extractLyricsAndChords(
   images: ExtractionImage[],
@@ -160,11 +216,13 @@ export async function extractLyricsAndChords(
 
 export async function extractStructure(
   images: ExtractionImage[],
+  textPrimary: TextExtractionResult,
 ): Promise<StructureExtractionResult> {
   const client = createAnthropicClient();
+  const inputLines = flattenTextExtractionLines(textPrimary);
   const content: (ImageBlockParam | TextBlockParam)[] = [
     ...buildImageBlocks(images),
-    { type: "text", text: STRUCTURE_EXTRACTION_PROMPT },
+    { type: "text", text: buildStructureExtractionPrompt(inputLines) },
   ];
   const message = await client.messages.parse({
     model: ANTHROPIC_MODEL,
@@ -178,5 +236,6 @@ export async function extractStructure(
   if (!message.parsed_output) {
     throw new Error("구조 추출 응답이 스키마 검증을 통과하지 못했습니다.");
   }
+  assertLineCountMatches(message.parsed_output, inputLines.length);
   return message.parsed_output;
 }

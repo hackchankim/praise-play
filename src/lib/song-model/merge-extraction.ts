@@ -1,8 +1,11 @@
 // 텍스트 추출(가사·코드·조표) 결과와 구조 추출(마디·박자) 결과를 하나의 섹션 트리로 병합한다
-// (Task 016). 두 결과는 sectionIndex/lineIndex로만 대응되므로(extraction-schemas.ts 참고),
-// 구조 추출이 특정 줄을 놓쳤거나 self-consistency 두 호출이 불일치하면 그 줄의 박자 정보는
-// 신뢰할 수 없다는 뜻이다 — 이럴 땐 DEFAULT_BEATS_PER_LINE으로 대체하고 해당 줄의 코드 전체를
-// needsReview로 표시해 교정 UI(Task 018)에서 사람이 확인하게 한다.
+// (Task 016). 구조 추출은 텍스트 추출(primary)이 확정한 줄 목록을 고정 입력으로 받아 그 순서
+// 그대로 답하므로(Task 032, extraction-schemas.ts 헤더 주석 참고), 두 결과는 "텍스트 추출
+// sections/lines를 순서대로 편 전체 줄 목록에서 몇 번째 줄인가"라는 하나의 전역 인덱스로만
+// 대응시키면 된다 — sectionIndex/lineIndex 같은 별도 좌표는 더 이상 없다. 구조 추출 결과의
+// 줄 개수가 이 전역 줄 개수와 다르면(모델이 줄을 빠뜨리거나 합쳤다는 뜻) 대응 자체를 신뢰할 수
+// 없으므로 이럴 땐 DEFAULT_BEATS_PER_LINE으로 대체하고 해당 줄의 코드 전체를 needsReview로
+// 표시해 교정 UI(Task 018)에서 사람이 확인하게 한다.
 //
 // 코드 하나하나의 박 위치(beatOffset)도 마찬가지 원칙이다 — 구조 추출이 마디 구조를 근거로
 // chordBeats(코드별 박 위치)를 직접 답하고 두 self-consistency 호출이 그 값(개수까지)까지
@@ -109,25 +112,9 @@ function agreeingChordBeats(a: number[] | undefined, b: number[] | undefined): n
   return hasCollision ? null : quantizedA;
 }
 
-/**
- * sectionIndex별 줄 개수. 텍스트 추출과 구조 추출(2회)이 같은 이미지를 보고도 구획을 서로 다르게
- * 나눌 수 있다 — TEXT_EXTRACTION_PROMPT에는 "연속된 줄을 한 구획으로 묶어라"는 지시가 있지만
- * STRUCTURE_EXTRACTION_PROMPT에는 없다(그 문구가 콘텐츠 필터링을 유발해 뺐다 — 위 프롬프트 정의
- * 주석 참고). 그 결과 어느 한쪽이 구획을 더 잘게 쪼개면, 같은 "sectionIndex:lineIndex" 키가
- * 서로 다른 물리적 줄을 가리키게 된다 — primary/secondary가 우연히 서로는 일치해도(둘 다 텍스트
- * 추출과 다르게 쪼갰다면) 그 키의 beatsInLine/chordBeats가 실제로는 엉뚱한 줄의 값이면서
- * needsReview 없이 통과할 위험이 있다(code review 지적). 그래서 줄 개수 자체가 텍스트 추출과
- * 다른 구획은, 두 구조 추출 호출이 서로 일치하더라도 통째로 신뢰하지 않는다.
- */
-function sectionLineCounts(result: StructureExtractionResult): Map<number, number> {
-  const counts = new Map<number, number>();
-  for (const section of result.sections) counts.set(section.sectionIndex, section.lines.length);
-  return counts;
-}
-
-/** 텍스트 추출 결과의 섹션 배열 순서(=sectionIndex) 기준 줄 개수. */
-function textSectionLineCounts(result: TextExtractionResult): number[] {
-  return result.sections.map((section) => section.lines.length);
+/** 텍스트 추출 결과를 구획 구분 없이 순서대로 편 전체 줄 개수 — 구조 추출 결과와의 대응 기준. */
+function totalLineCount(result: TextExtractionResult): number {
+  return result.sections.reduce((sum, section) => sum + section.lines.length, 0);
 }
 
 /**
@@ -135,15 +122,17 @@ function textSectionLineCounts(result: TextExtractionResult): number[] {
  * 표시한다. beatOffset과 달리 charOffset은 정수 글자 인덱스라 오차범위를 둘 이유가 없다 —
  * 몇 글자만 어긋나도 실제로는 다른 음절을 가리키므로 정확히 같을 때만 신뢰한다.
  *
- * 구획 개수 자체가 두 호출 사이에서 어긋나면(위 sectionLineCounts 관련 주석과 같은 문제 —
- * 여기선 텍스트 추출 두 호출 사이에서 발생) sectionIndex:lineIndex 키가 서로 다른 물리적 줄을
- * 가리킬 수 있으므로, 그 구획은 통째로 확인 대상에서 뺀다.
+ * 텍스트 추출은 구조 추출과 달리 두 호출 다 구획/줄 경계를 각자 독립적으로 판단한다(둘 다
+ * 텍스트 추출이라 어느 한쪽에 고정 입력을 줄 "확정된 파티션"이 없다) — 그래서 구획 개수 자체가
+ * 두 호출 사이에서 어긋나면 sectionIndex:lineIndex 키가 서로 다른 물리적 줄을 가리킬 수 있고,
+ * 그 구획은 통째로 확인 대상에서 뺀다. (이 축의 불일치는 Task 032가 다루는 범위 밖이다 —
+ * 구조 추출 쪽만 텍스트 추출의 고정 파티션을 받도록 바꿨다.)
  */
 function buildCharOffsetConfirmedLines(
   primary: TextExtractionResult,
   secondary: TextExtractionResult,
 ): Set<string> {
-  const secondaryLineCounts = textSectionLineCounts(secondary);
+  const secondaryLineCounts = secondary.sections.map((section) => section.lines.length);
   const confirmed = new Set<string>();
 
   primary.sections.forEach((section, sectionIndex) => {
@@ -163,52 +152,34 @@ function buildCharOffsetConfirmedLines(
   return confirmed;
 }
 
+/**
+ * 구조 추출 primary/secondary 결과를, 텍스트 추출을 순서대로 편 전체 줄 목록의 전역 인덱스로
+ * 대응시킨다. 구조 추출은 이제 그 줄 목록을 고정 입력으로 받아 같은 순서로만 답하므로(Task 032),
+ * 두 결과 각각의 lines 배열 길이가 expectedLineCount와 정확히 같을 때만(=모델이 줄을 빠뜨리거나
+ * 합치지 않았을 때만) 배열 순서를 그대로 전역 인덱스로 신뢰한다 — 하나라도 다르면 어느 인덱스가
+ * 실제로 어느 줄을 가리키는지 알 수 없으므로 통째로 비운다(호출부는 빈 조회를 "구조 정보 없음"
+ * 으로 취급해 이미 안전하게 DEFAULT_BEATS_PER_LINE·needsReview=true로 폴백한다).
+ */
 function buildStructureLookup(
-  text: TextExtractionResult,
+  expectedLineCount: number,
   primary: StructureExtractionResult,
   secondary: StructureExtractionResult,
-): Map<string, StructureLineLookup> {
-  const primaryLineCounts = sectionLineCounts(primary);
-  const secondaryLineCounts = sectionLineCounts(secondary);
-  const trustworthySectionIndexes = new Set(
-    text.sections
-      .map((section, sectionIndex) => sectionIndex)
-      .filter(
-        (sectionIndex) =>
-          primaryLineCounts.get(sectionIndex) === text.sections[sectionIndex]!.lines.length &&
-          secondaryLineCounts.get(sectionIndex) === text.sections[sectionIndex]!.lines.length,
-      ),
-  );
-
-  const secondaryByKey = new Map<
-    string,
-    StructureExtractionResult["sections"][number]["lines"][number]
-  >();
-  for (const section of secondary.sections) {
-    for (const line of section.lines) {
-      secondaryByKey.set(`${section.sectionIndex}:${line.lineIndex}`, line);
-    }
+): Map<number, StructureLineLookup> {
+  const lookup = new Map<number, StructureLineLookup>();
+  if (primary.lines.length !== expectedLineCount || secondary.lines.length !== expectedLineCount) {
+    return lookup;
   }
 
-  const lookup = new Map<string, StructureLineLookup>();
-  for (const section of primary.sections) {
-    // 이 구획의 줄 개수가 텍스트 추출과 다르면 sectionIndex:lineIndex 키 자체가 신뢰할 수 없다
-    // — 아예 채우지 않는다. 호출부는 없는 키를 "구조 정보 없음"으로 취급해 이미 안전하게
-    // DEFAULT_BEATS_PER_LINE·needsReview=true로 폴백한다.
-    if (!trustworthySectionIndexes.has(section.sectionIndex)) continue;
-    for (const line of section.lines) {
-      const key = `${section.sectionIndex}:${line.lineIndex}`;
-      const secondaryLine = secondaryByKey.get(key);
-      const mismatched =
-        secondaryLine === undefined ||
-        Math.abs(secondaryLine.beatsInLine - line.beatsInLine) > BEATS_MATCH_TOLERANCE;
-      lookup.set(key, {
-        beatsInLine: line.beatsInLine,
-        mismatched,
-        chordBeats: agreeingChordBeats(line.chordBeats, secondaryLine?.chordBeats),
-      });
-    }
-  }
+  primary.lines.forEach((line, index) => {
+    const secondaryLine = secondary.lines[index]!;
+    const mismatched =
+      Math.abs(secondaryLine.beatsInLine - line.beatsInLine) > BEATS_MATCH_TOLERANCE;
+    lookup.set(index, {
+      beatsInLine: line.beatsInLine,
+      mismatched,
+      chordBeats: agreeingChordBeats(line.chordBeats, secondaryLine.chordBeats),
+    });
+  });
   return lookup;
 }
 
@@ -218,15 +189,21 @@ export function mergeExtractionResults(
   structurePrimary: StructureExtractionResult,
   structureSecondary: StructureExtractionResult,
 ): MergedExtractionResult {
-  const structureLookup = buildStructureLookup(textPrimary, structurePrimary, structureSecondary);
+  const structureLookup = buildStructureLookup(
+    totalLineCount(textPrimary),
+    structurePrimary,
+    structureSecondary,
+  );
   const charOffsetConfirmedLines = buildCharOffsetConfirmedLines(textPrimary, textSecondary);
 
+  let globalLineIndex = 0;
   let songBeatCursor = 0;
   const sections: MergedSection[] = textPrimary.sections.map((section, sectionIndex) => {
     let sectionBeatCursor = 0;
 
     const lines: MergedLine[] = section.lines.map((line, lineIndex) => {
-      const structureEntry = structureLookup.get(`${sectionIndex}:${lineIndex}`);
+      const structureEntry = structureLookup.get(globalLineIndex);
+      globalLineIndex += 1;
       const beatsInLine = structureEntry?.beatsInLine ?? DEFAULT_BEATS_PER_LINE;
       // chordBeats는 primary/secondary가 서로 일치했을 때만 채워지지만(buildStructureLookup),
       // 그 개수가 실제 이 줄의 코드 개수와도 맞아야 안전하다 — 텍스트 추출과 구조 추출은 서로
