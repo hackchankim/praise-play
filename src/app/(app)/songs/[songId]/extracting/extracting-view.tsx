@@ -8,6 +8,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { PageHeader } from "@/components/domain/page-header";
 import { cn } from "@/lib/utils";
+import { toUserFacingErrorMessage } from "@/lib/errors";
 import { routes } from "@/lib/routes";
 import { supabaseRepositoryClient } from "@/lib/supabase/repository-client";
 import { triggerExtraction } from "@/lib/extraction/trigger-extraction";
@@ -152,7 +153,7 @@ export function ExtractingView({ songId }: ExtractingViewProps) {
       setJob(null);
       setTimedOut(false);
     } catch (error) {
-      setRetryError(error instanceof Error ? error.message : "재시도에 실패했습니다.");
+      setRetryError(toUserFacingErrorMessage(error, "재시도에 실패했습니다."));
     } finally {
       retryingRef.current = false;
       setRetrying(false);

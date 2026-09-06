@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { PageHeader } from "@/components/domain/page-header";
 import { cn } from "@/lib/utils";
+import { toUserFacingErrorMessage } from "@/lib/errors";
 import { routes } from "@/lib/routes";
 import { songRepository } from "@/lib/repositories/song-repository";
 import { WriteCommittedButUnconfirmedError } from "@/lib/repositories/errors";
@@ -296,7 +297,7 @@ export default function SongsUploadPage() {
               ? {
                   ...img,
                   status: "failed",
-                  error: error instanceof Error ? error.message : "업로드에 실패했습니다.",
+                  error: toUserFacingErrorMessage(error, "업로드에 실패했습니다."),
                 }
               : img,
           ),

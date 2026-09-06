@@ -19,6 +19,7 @@ import { ErrorState } from "@/components/domain/error-state";
 import { PageHeader } from "@/components/domain/page-header";
 import { routes } from "@/lib/routes";
 import { cn } from "@/lib/utils";
+import { toUserFacingErrorMessage } from "@/lib/errors";
 import {
   OptimisticLockConflictError,
   deleteDraftCorrection,
@@ -109,6 +110,13 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
 
   const [mobileTab, setMobileTab] = useState<"original" | "editor">("original");
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
+  // tempSaveAndLeave/discardAndLeave/"원본으로 초기화" 세 곳 모두 draft(임시 저장)를
+  // 만지므로, 셋 중 하나가 서버 왕복을 끝내기 전까지 나머지를 막는다 — 아니면 느린 연결에서
+  // 예를 들어 "저장하지 않고 나가기"를 누른 직후 "임시 저장 후 나가기"를 또 누르면 DELETE와
+  // PUT이 경합해 DELETE가 먼저 끝나고 뒤늦게 도착한 PUT이 방금 지운 임시 저장을 되살릴 수
+  // 있다(code review 지적, 재현 가능함을 확인). "나가기"가 아닌 "초기화"까지 이 이름 하나로
+  // 묶는 이유는 셋 다 "지금 draft에 손대고 있다"는 같은 성질의 상태이기 때문이다.
+  const [isDraftMutationPending, setIsDraftMutationPending] = useState(false);
 
   // 데스크톱(좌우 분할)과 모바일(탭 전환)은 DOM 구조 자체가 다르다. Tailwind의 hidden/md:*로 두
   // 레이아웃을 동시에 마운트해 두고 CSS로만 보이기/숨기기를 하면, 코드 칩마다 두 개의 DOM 노드가
@@ -194,17 +202,34 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
   // "임시 저장 후 나가기" 버튼을 누르지 않고 그냥 탭을 닫아도 이어서 교정할 수 있어야 한다는
   // PRD 요구를 만족시키려면 명시적 조작 없이도 주기적으로 저장돼야 한다.
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 진행 중인 자동 저장 PUT을 가리킨다 — tempSaveAndLeave/discardAndLeave/"원본으로 초기화"가
+  // draft를 지우거나 다른 내용으로 덮어쓰기 시작할 때, 그보다 먼저 예약(또는 이미 전송)된
+  // 자동 저장이 나중에 도착해 방금 한 작업을 무의미하게 만들 수 있다(code review 지적,
+  // 예약된 타이머만 취소해선 이미 전송된 요청까지는 못 막는다는 걸 재현 확인) — 그 진행 중인
+  // 요청 자체를 abort()로 확실히 끊는다.
+  const autoSaveAbortRef = useRef<AbortController | null>(null);
   useEffect(() => {
-    if (!dirty || status !== "ready") return;
+    // isDraftMutationPending인 동안은 새 자동 저장을 예약하지 않는다 — 지금 draft를 지우거나
+    // 나가는 중인데 그 위에 새 자동 저장이 덮어쓰면 안 된다.
+    if (!dirty || status !== "ready" || isDraftMutationPending) return;
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     autoSaveTimerRef.current = setTimeout(() => {
       const request = buildSaveCorrectionRequest(songMeta, sections, initialUpdatedAtRef.current);
-      void saveDraftCorrection(songId, request);
+      const controller = new AbortController();
+      autoSaveAbortRef.current = controller;
+      void saveDraftCorrection(songId, request, controller.signal);
     }, AUTO_SAVE_DEBOUNCE_MS);
     return () => {
       if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     };
-  }, [songId, songMeta, sections, dirty, status]);
+  }, [songId, songMeta, sections, dirty, status, isDraftMutationPending]);
+
+  /** tempSaveAndLeave/discardAndLeave/"원본으로 초기화" 시작 시 반드시 먼저 호출한다 — 예약된
+   * 자동 저장 타이머를 취소하고, 이미 전송된 자동 저장 요청이 있으면 abort한다. */
+  function cancelPendingAutoSave() {
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveAbortRef.current?.abort();
+  }
 
   const startBeats = useMemo(() => computeAbsoluteStartBeats(sections), [sections]);
   const displayLabels = useMemo(() => computeSectionDisplayLabels(sections), [sections]);
@@ -261,9 +286,7 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
       if (error instanceof OptimisticLockConflictError) {
         setSaveError("다른 곳에서 먼저 저장되었습니다. 페이지를 새로고침한 뒤 다시 시도해주세요.");
       } else {
-        setSaveError(
-          error instanceof Error ? error.message : "저장에 실패했습니다. 다시 시도해주세요.",
-        );
+        setSaveError(toUserFacingErrorMessage(error, "저장에 실패했습니다. 다시 시도해주세요."));
       }
     } finally {
       setIsSaving(false);
@@ -271,17 +294,46 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
   }
 
   async function tempSaveAndLeave() {
+    if (isDraftMutationPending) return;
+    setIsDraftMutationPending(true);
+    // 자동 저장 타이머가 이 시점에 대기 중이거나 이미 요청을 보낸 상태일 수 있다 — 그 요청이
+    // 이 함수의 PUT보다 늦게 도착하면 서로 다른 내용으로 덮어쓸 수 있으므로 먼저 정리한다.
+    cancelPendingAutoSave();
     const request = buildSaveCorrectionRequest(songMeta, sections, initialUpdatedAtRef.current);
-    await saveDraftCorrection(songId, request);
+    // saveDraftCorrection은 자동 저장을 위한 "베스트 에포트" 계약이라 실패해도 예외를 던지지
+    // 않고 false만 돌려준다(다음 자동 저장이 재시도한다는 전제) — 하지만 여기서는 그 전제가
+    // 깨진다: 사용자가 지금 페이지를 떠나려는 것이므로 "다음 자동 저장"이 없다. 반환값을
+    // 확인하지 않으면 저장이 실패했는데도 편집 내용을 조용히 버리고 나가 버린다(code review
+    // 지적, 실제로 재현 가능함을 확인 — 오프라인 상태에서 클릭하면 아무 안내 없이 홈으로
+    // 이동해버렸다).
+    const saved = await saveDraftCorrection(songId, request);
+    if (!saved) {
+      setSaveError("임시 저장에 실패했습니다. 네트워크 상태를 확인한 뒤 다시 시도해주세요.");
+      setIsDraftMutationPending(false);
+      return;
+    }
+    setSaveError(null);
     setDirty(false);
     setLeaveDialogOpen(false);
     router.push(routes.home());
   }
 
-  function discardAndLeave() {
-    // 자동 저장으로 이미 서버에 임시 저장이 남아 있을 수 있다 — "버린다"는 의도를 지키려면
-    // 다음 접속 시 되살아나지 않도록 함께 지운다.
-    void deleteDraftCorrection(songId);
+  async function discardAndLeave() {
+    if (isDraftMutationPending) return;
+    setIsDraftMutationPending(true);
+    // 자동 저장으로 이미 서버에 임시 저장이 남아 있을 수 있고, 지금 이 순간에도 자동 저장
+    // 타이머가 대기 중이거나 요청이 이미 전송돼 있을 수 있다 — 그 요청이 아래 DELETE보다
+    // 늦게 도착하면 "버린" 임시 저장이 되살아난다(code review 지적, 재현 가능함을 확인:
+    // 예약된 타이머만 취소해선 이미 전송된 요청까지는 못 막는다). 타이머 취소 + 진행 중인
+    // 요청 abort 둘 다 한다.
+    cancelPendingAutoSave();
+    const deleted = await deleteDraftCorrection(songId);
+    if (!deleted) {
+      setSaveError("임시 저장을 지우지 못했습니다. 네트워크 상태를 확인한 뒤 다시 시도해주세요.");
+      setIsDraftMutationPending(false);
+      return;
+    }
+    setSaveError(null);
     setDirty(false);
     setLeaveDialogOpen(false);
     router.push(routes.home());
@@ -293,6 +345,18 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
     } else {
       router.push(routes.home());
     }
+  }
+
+  /**
+   * "취소" 버튼이 대화상자를 닫을 때 쓴다. setLeaveDialogOpen을 직접 부르는 건(Dialog의
+   * onOpenChange를 거치지 않는다) — onOpenChange는 Radix가 ESC·오버레이 클릭 등 자기
+   * 내부에서 닫힘을 감지했을 때만 부르는 콜백이지, open prop 값이 바뀌는 모든 경우에 함께
+   * 도는 범용 리스너가 아니다(재현 확인: 이 버튼 클릭은 onOpenChange를 안 거쳐 아래 Dialog의
+   * onOpenChange에 넣어둔 saveError 초기화가 실행되지 않았다) — 그래서 여기서 따로 지운다.
+   */
+  function closeLeaveDialogByButton() {
+    setSaveError(null);
+    setLeaveDialogOpen(false);
   }
 
   if (status === "loading") {
@@ -439,11 +503,21 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
         description={`곡 ID: ${songId} · 원본 이미지·가사·코드를 확인하고 확정하세요.`}
         action={
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={handleLeaveClick}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleLeaveClick}
+              disabled={isDraftMutationPending}
+            >
               <Home />
               나가기
             </Button>
-            <Button variant="outline" size="sm" onClick={tempSaveAndLeave}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={tempSaveAndLeave}
+              disabled={isDraftMutationPending}
+            >
               임시 저장 후 나가기
             </Button>
             <Button size="sm" onClick={performSave} disabled={isSaving || sections.length === 0}>
@@ -459,8 +533,25 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
           <Button
             variant="ghost"
             size="xs"
+            disabled={isDraftMutationPending}
             onClick={() => {
-              void deleteDraftCorrection(songId);
+              if (isDraftMutationPending) return;
+              // 화면은 서버 응답을 기다리지 않고 즉시 원본으로 되돌린다(사용자가 지금 보고
+              // 싶은 건 원본이므로) — 하지만 그 사이 다른 draft 조작(예: "임시 저장 후
+              // 나가기")이 끼어들면 이 DELETE와 경합해 방금 초기화한 draft가 되살아날 수
+              // 있으므로(discardAndLeave와 같은 이유, code review 지적) 서버 왕복이 끝날
+              // 때까지는 isDraftMutationPending으로 다른 버튼들을 막는다. 자동 저장 타이머도
+              // 같은 이유로 먼저 정리한다.
+              setIsDraftMutationPending(true);
+              cancelPendingAutoSave();
+              deleteDraftCorrection(songId).then((deleted) => {
+                if (!deleted) {
+                  setSaveError(
+                    "서버의 임시 저장을 지우지 못했습니다 — 네트워크가 복구되면 다시 시도해주세요.",
+                  );
+                }
+                setIsDraftMutationPending(false);
+              });
               setSongMeta(toEditableSong(tree.song));
               setSections(defaultSections(tree.song));
               setDraftBannerVisible(false);
@@ -549,7 +640,17 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
         </Tabs>
       )}
 
-      <Dialog open={leaveDialogOpen} onOpenChange={setLeaveDialogOpen}>
+      <Dialog
+        open={leaveDialogOpen}
+        onOpenChange={(open) => {
+          // "취소" 버튼뿐 아니라 ESC·오버레이 클릭·대화상자 기본 X 버튼 등 어떤 방식으로
+          // 닫히든 이 콜백을 거친다 — 실패 배너를 "취소" 버튼 onClick에서만 지우면 다른
+          // 닫기 경로로는 안 지워져 다음에 다시 열었을 때도 지난 실패가 계속 남는다(code
+          // review 지적, 재현 가능함을 확인: ESC로 닫은 경우).
+          if (!open) setSaveError(null);
+          setLeaveDialogOpen(open);
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>저장하지 않은 변경 사항이 있습니다</DialogTitle>
@@ -558,14 +659,27 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
               나갈 수 있습니다.
             </DialogDescription>
           </DialogHeader>
+          {/* 대화상자가 열려 있는 동안은 본문의 saveError 배너가 오버레이에 가려 안 보이므로,
+              대화상자 안에서 tempSaveAndLeave가 실패하면(임시 저장 실패) 여기서도 보여준다. */}
+          {saveError && <p className="text-sm text-destructive">{saveError}</p>}
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setLeaveDialogOpen(false)}>
+            <Button
+              variant="ghost"
+              onClick={closeLeaveDialogByButton}
+              disabled={isDraftMutationPending}
+            >
               취소
             </Button>
-            <Button variant="destructive" onClick={discardAndLeave}>
+            <Button
+              variant="destructive"
+              onClick={discardAndLeave}
+              disabled={isDraftMutationPending}
+            >
               저장하지 않고 나가기
             </Button>
-            <Button onClick={tempSaveAndLeave}>임시 저장 후 나가기</Button>
+            <Button onClick={tempSaveAndLeave} disabled={isDraftMutationPending}>
+              임시 저장 후 나가기
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

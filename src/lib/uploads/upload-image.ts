@@ -1,14 +1,16 @@
 // presign 발급 → R2 직접 PUT을 한 이미지에 대해 순서대로 수행하는 오케스트레이터 (Task 015).
+// fetch()/res.json() 자체는 항상 errors.ts의 헬퍼를 거친다.
 import type {
   ApiErrorBody,
   PresignUploadRequest,
   PresignUploadResponse,
 } from "@/lib/api/contracts";
+import { fetchOrThrowNetworkError, parseJsonOrThrowNetworkError } from "@/lib/errors";
 import { resizeImageForUpload } from "./resize-image";
 import { uploadFileToR2 } from "./upload-to-r2";
 
 async function postJson<TResponse>(url: string, body: unknown): Promise<TResponse> {
-  const res = await fetch(url, {
+  const res = await fetchOrThrowNetworkError(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -17,7 +19,7 @@ async function postJson<TResponse>(url: string, body: unknown): Promise<TRespons
     const errorBody = (await res.json().catch(() => null)) as ApiErrorBody | null;
     throw new Error(errorBody?.error.message ?? `요청에 실패했습니다 (status ${res.status}).`);
   }
-  return res.json() as Promise<TResponse>;
+  return parseJsonOrThrowNetworkError<TResponse>(res);
 }
 
 /** 이미지 하나를 리사이즈 후 R2에 업로드하고, 등록에 쓸 objectKey를 반환한다. */
