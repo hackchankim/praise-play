@@ -97,8 +97,12 @@ export const extractChart = inngest.createFunction(
     await markProgress(songId, "upload", "completed");
     const images = await loadImages(songId);
 
-    // 텍스트 추출과 구조 추출(2회, self-consistency용)은 서로의 결과를 필요로 하지 않으므로
-    // 동시에 실행한다 — 순차 실행 대비 파이프라인 지연시간을 절반 가까이 줄인다.
+    // 텍스트 추출과 구조 추출은 각각 2회씩(self-consistency용) 서로의 결과를 필요로 하지
+    // 않으므로 동시에 실행한다 — 순차 실행 대비 파이프라인 지연시간을 절반 가까이 줄인다.
+    // 텍스트 추출도 2회 호출하는 이유: beatOffset(몇 번째 박)은 구조 추출의 chordBeats로
+    // 정확한데, charOffset(그 박에 어느 글자가 붙는지)은 픽셀 정렬 눈대중이라 호출마다 결과가
+    // 갈렸다(실사용 피드백) — merge-extraction.ts가 이 두 호출을 대조해 확인되지 않은 charOffset
+    // 은 검토 대상으로 표시한다.
     //
     // 진행 상태는 extraction_jobs 한 행의 stage 컬럼 하나로만 표현되는데, 두 단계를 각각
     // 독립적으로 in_progress/completed 마킹하면 Promise.all이 끝난 뒤 "text_extraction
@@ -111,8 +115,9 @@ export const extractChart = inngest.createFunction(
     // 배지는 structure_extraction이 진행되는 순간 "완료"로 함께 넘어간다(실제로도 같은
     // 시점에 시작·종료되므로 부정확한 표현이 아니다).
     await markProgress(songId, "structure_extraction", "in_progress");
-    const [textResult, structurePrimary, structureSecondary] = await Promise.all([
-      step.run("text-extraction", () => extractLyricsAndChords(images)),
+    const [textPrimary, textSecondary, structurePrimary, structureSecondary] = await Promise.all([
+      step.run("text-extraction-1", () => extractLyricsAndChords(images)),
+      step.run("text-extraction-2", () => extractLyricsAndChords(images)),
       // self-consistency 체크: 같은 이미지로 구조 추출을 2회 호출해 불일치 지점을 찾는다
       // (docs/PLAN.md — 공간 추론/카운팅은 텍스트 판독보다 신뢰도가 낮다는 전제).
       step.run("structure-extraction-1", () => extractStructure(images)),
@@ -122,7 +127,7 @@ export const extractChart = inngest.createFunction(
 
     await markProgress(songId, "merge", "in_progress");
     const merged = await step.run("merge", () =>
-      mergeExtractionResults(textResult, structurePrimary, structureSecondary),
+      mergeExtractionResults(textPrimary, textSecondary, structurePrimary, structureSecondary),
     );
     await markProgress(songId, "merge", "completed");
 

@@ -11,6 +11,14 @@
 // 맞으면 이 글자-비례 추정을 검증 없이 그대로 신뢰해, 코드 여러 개가 실제로는 서로 다른 박에
 // 있는데도 뭉쳐 찍히는 등 부정확한 결과가 검토 필요 표시 없이 그대로 저장됐다(실사용 피드백).
 //
+// 코드의 charOffset(가사 글자 위치)도 같은 이유로 self-consistency가 필요하다 — 실사용자
+// 피드백으로 beatOffset(몇 번째 박인지)은 마디 구조 기반으로 정확한데 charOffset(그 박에 어느
+// 글자가 붙는지)이 픽셀 정렬 눈대중이라 자주 어긋난다는 게 드러났다. beatOffset과 달리 charOffset
+// 에는 대체할 만한 안전한 추정치가 없어서(estimateBeatOffset은 charOffset을 "입력"으로 쓰지
+// "출력"하지 않는다), 두 텍스트 추출 호출이 정확히 일치하지 않으면 primary의 값을 그대로 쓰되
+// needsReview로 표시해 최소한 사람이 확인하게만 한다 — beatsInLine·chordBeats처럼 조용히 틀린
+// 채 저장되는 일은 없어야 한다.
+//
 // 섹션의 repeat_target_section_id는 여기서 채우지 않는다(항상 null) — 도돌이표 기반 섹션 반복
 // 추론은 Task 017(섹션 자동 추론기)의 책임이다.
 import { createId } from "@/lib/repositories/mock-utils";
@@ -99,6 +107,44 @@ function sectionLineCounts(result: StructureExtractionResult): Map<number, numbe
   return counts;
 }
 
+/** 텍스트 추출 결과의 섹션 배열 순서(=sectionIndex) 기준 줄 개수. */
+function textSectionLineCounts(result: TextExtractionResult): number[] {
+  return result.sections.map((section) => section.lines.length);
+}
+
+/**
+ * primary/secondary 두 텍스트 추출 호출의 charOffset이 완전히 일치하는 줄만 "확인됨"으로
+ * 표시한다. beatOffset과 달리 charOffset은 정수 글자 인덱스라 오차범위를 둘 이유가 없다 —
+ * 몇 글자만 어긋나도 실제로는 다른 음절을 가리키므로 정확히 같을 때만 신뢰한다.
+ *
+ * 구획 개수 자체가 두 호출 사이에서 어긋나면(위 sectionLineCounts 관련 주석과 같은 문제 —
+ * 여기선 텍스트 추출 두 호출 사이에서 발생) sectionIndex:lineIndex 키가 서로 다른 물리적 줄을
+ * 가리킬 수 있으므로, 그 구획은 통째로 확인 대상에서 뺀다.
+ */
+function buildCharOffsetConfirmedLines(
+  primary: TextExtractionResult,
+  secondary: TextExtractionResult,
+): Set<string> {
+  const secondaryLineCounts = textSectionLineCounts(secondary);
+  const confirmed = new Set<string>();
+
+  primary.sections.forEach((section, sectionIndex) => {
+    if (secondaryLineCounts[sectionIndex] !== section.lines.length) return;
+    const secondarySection = secondary.sections[sectionIndex]!;
+
+    section.lines.forEach((line, lineIndex) => {
+      const secondaryLine = secondarySection.lines[lineIndex];
+      if (!secondaryLine || secondaryLine.chords.length !== line.chords.length) return;
+      const allMatch = line.chords.every(
+        (chord, chordIndex) => chord.charOffset === secondaryLine.chords[chordIndex]!.charOffset,
+      );
+      if (allMatch) confirmed.add(`${sectionIndex}:${lineIndex}`);
+    });
+  });
+
+  return confirmed;
+}
+
 function buildStructureLookup(
   text: TextExtractionResult,
   primary: StructureExtractionResult,
@@ -149,14 +195,16 @@ function buildStructureLookup(
 }
 
 export function mergeExtractionResults(
-  text: TextExtractionResult,
+  textPrimary: TextExtractionResult,
+  textSecondary: TextExtractionResult,
   structurePrimary: StructureExtractionResult,
   structureSecondary: StructureExtractionResult,
 ): MergedExtractionResult {
-  const structureLookup = buildStructureLookup(text, structurePrimary, structureSecondary);
+  const structureLookup = buildStructureLookup(textPrimary, structurePrimary, structureSecondary);
+  const charOffsetConfirmedLines = buildCharOffsetConfirmedLines(textPrimary, textSecondary);
 
   let songBeatCursor = 0;
-  const sections: MergedSection[] = text.sections.map((section, sectionIndex) => {
+  const sections: MergedSection[] = textPrimary.sections.map((section, sectionIndex) => {
     let sectionBeatCursor = 0;
 
     const lines: MergedLine[] = section.lines.map((line, lineIndex) => {
@@ -169,14 +217,19 @@ export function mergeExtractionResults(
         structureEntry?.chordBeats?.length === line.chords.length
           ? structureEntry.chordBeats
           : null;
+      // charOffset도 두 텍스트 추출 호출이 정확히 일치할 때만 "확인됨"으로 본다 — 어긋나면
+      // primary의 charOffset을 그대로 쓰되(대체할 안전한 추정치가 없다) 검토 대상으로 표시한다.
+      const charOffsetConfirmed = charOffsetConfirmedLines.has(`${sectionIndex}:${lineIndex}`);
       // 구조 정보가 아예 없거나(텍스트 추출만 이 줄을 봤음) 두 호출이 불일치했으면 신뢰할 수
       // 없다. 코드가 있는 줄인데 마디 구조를 근거로 한 코드별 박 위치(chordBeats)를 못 얻었으면
       // (개수가 안 맞거나 자기 일관성이 깨졌으면) 글자 비례 추정으로 되돌아가야 하므로 이것도
-      // 검토 대상이다 — 예전처럼 beatsInLine만 맞으면 조용히 넘어가지 않는다.
+      // 검토 대상이다 — 예전처럼 beatsInLine만 맞으면 조용히 넘어가지 않는다. charOffset이
+      // 두 호출 사이에서 확인되지 않은 것도 마찬가지로 검토 대상이다.
       const needsReview =
         structureEntry === undefined ||
         structureEntry.mismatched ||
-        (line.chords.length > 0 && chordBeats === null);
+        (line.chords.length > 0 && chordBeats === null) ||
+        (line.chords.length > 0 && !charOffsetConfirmed);
 
       const lineStartBeat = sectionBeatCursor;
       sectionBeatCursor += beatsInLine;
@@ -224,7 +277,7 @@ export function mergeExtractionResults(
   });
 
   return {
-    key: text.key,
+    key: textPrimary.key,
     // songs.tempo는 integer 컬럼이다 — 구조 추출 스키마는 소수 BPM도 허용하므로 반올림한다.
     tempo: Math.round(structurePrimary.tempo),
     timeSignature: structurePrimary.timeSignature,
