@@ -97,31 +97,37 @@ export const extractChart = inngest.createFunction(
     await markProgress(songId, "upload", "completed");
     const images = await loadImages(songId);
 
-    // 텍스트 추출과 구조 추출은 각각 2회씩(self-consistency용) 서로의 결과를 필요로 하지
-    // 않으므로 동시에 실행한다 — 순차 실행 대비 파이프라인 지연시간을 절반 가까이 줄인다.
-    // 텍스트 추출도 2회 호출하는 이유: beatOffset(몇 번째 박)은 구조 추출의 chordBeats로
-    // 정확한데, charOffset(그 박에 어느 글자가 붙는지)은 픽셀 정렬 눈대중이라 호출마다 결과가
-    // 갈렸다(실사용 피드백) — merge-extraction.ts가 이 두 호출을 대조해 확인되지 않은 charOffset
-    // 은 검토 대상으로 표시한다.
-    //
-    // 진행 상태는 extraction_jobs 한 행의 stage 컬럼 하나로만 표현되는데, 두 단계를 각각
-    // 독립적으로 in_progress/completed 마킹하면 Promise.all이 끝난 뒤 "text_extraction
-    // completed"를 "structure_extraction in_progress"보다 나중에 써서 stage 인덱스가
-    // 뒤로 되돌아간다(EXTRACTION_STAGES 순서상 text_extraction이 structure_extraction보다
-    // 앞 단계라서다) — 실시간 구독 중인 클라이언트의 진행률/단계 배지가 잠깐 역행해 보인다
-    // (code review 지적, computeOverallProgress·extracting-view.tsx의 stage 인덱스 비교
-    // 로직 추적으로 재현 가능함을 확인). 두 단계는 항상 같이 시작해 같이 끝나므로, 더 뒤
-    // 단계(structure_extraction) 하나로만 진행을 보고해 역행 자체를 없앤다 — text_extraction
-    // 배지는 structure_extraction이 진행되는 순간 "완료"로 함께 넘어간다(실제로도 같은
-    // 시점에 시작·종료되므로 부정확한 표현이 아니다).
-    await markProgress(songId, "structure_extraction", "in_progress");
-    const [textPrimary, textSecondary, structurePrimary, structureSecondary] = await Promise.all([
+    // 구조 추출은 이제 텍스트 추출(primary)이 확정한 구획/줄 목록을 고정 입력으로 받는다
+    // (Task 032 — extraction-schemas.ts 헤더 주석 참고, 구조 추출이 스스로 구획을 나누면
+    // 텍스트 추출과 좌표가 어긋나 곡 전체가 needsReview로 뒤덮이는 사례가 실사용에서 나왔다).
+    // 그래서 text-extraction-1을 먼저 끝내야만 구조 추출 두 호출을 시작할 수 있다 — 완전
+    // 병렬은 아니지만, text-extraction-2(charOffset self-consistency용, 구조 추출과는 무관)는
+    // text-extraction-1과 동시에 돌려 지연시간을 최소화한다.
+    await markProgress(songId, "text_extraction", "in_progress");
+    const [textPrimary, textSecondary] = await Promise.all([
       step.run("text-extraction-1", () => extractLyricsAndChords(images)),
+      // 텍스트 추출을 2회 호출하는 이유: beatOffset(몇 번째 박)은 구조 추출의 chordBeats로
+      // 정확한데, charOffset(그 박에 어느 글자가 붙는지)은 픽셀 정렬 눈대중이라 호출마다 결과가
+      // 갈렸다(실사용 피드백) — merge-extraction.ts가 이 두 호출을 대조해 확인되지 않은
+      // charOffset은 검토 대상으로 표시한다.
       step.run("text-extraction-2", () => extractLyricsAndChords(images)),
+    ]);
+    // 진행 상태는 extraction_jobs 한 행의 stage 컬럼 하나로만 표현되는데, 두 단계를 각각
+    // 독립적으로 in_progress/completed 마킹하면 "text_extraction completed"를
+    // "structure_extraction in_progress"보다 나중에 써서 stage 인덱스가 뒤로 되돌아간다
+    // (EXTRACTION_STAGES 순서상 text_extraction이 structure_extraction보다 앞 단계라서다) —
+    // 실시간 구독 중인 클라이언트의 진행률/단계 배지가 잠깐 역행해 보인다(code review 지적,
+    // computeOverallProgress·extracting-view.tsx의 stage 인덱스 비교 로직 추적으로 재현
+    // 가능함을 확인). 그래서 text_extraction을 completed로 마킹하는 대신 곧바로
+    // structure_extraction을 in_progress로 넘긴다 — 두 단계가 실제로 거의 같은 시점에
+    // 이어지므로 부정확한 표현이 아니다.
+    await markProgress(songId, "structure_extraction", "in_progress");
+    const [structurePrimary, structureSecondary] = await Promise.all([
       // self-consistency 체크: 같은 이미지로 구조 추출을 2회 호출해 불일치 지점을 찾는다
-      // (docs/PLAN.md — 공간 추론/카운팅은 텍스트 판독보다 신뢰도가 낮다는 전제).
-      step.run("structure-extraction-1", () => extractStructure(images)),
-      step.run("structure-extraction-2", () => extractStructure(images)),
+      // (docs/PLAN.md — 공간 추론/카운팅은 텍스트 판독보다 신뢰도가 낮다는 전제). 둘 다
+      // textPrimary가 확정한 같은 줄 목록을 입력으로 받는다.
+      step.run("structure-extraction-1", () => extractStructure(images, textPrimary)),
+      step.run("structure-extraction-2", () => extractStructure(images, textPrimary)),
     ]);
     await markProgress(songId, "structure_extraction", "completed");
 

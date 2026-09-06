@@ -12,11 +12,12 @@ function textResult(
   };
 }
 
+/** 텍스트 추출이 줄 하나짜리인 테스트용 구조 추출 결과 — lines 배열 길이가 1이어야 신뢰된다. */
 function structureResult(beatsInLine: number, chordBeats?: number[]): StructureExtractionResult {
   return {
     tempo: 100,
     timeSignature: "4/4",
-    sections: [{ sectionIndex: 0, lines: [{ lineIndex: 0, beatsInLine, chordBeats }] }],
+    lines: [{ beatsInLine, chordBeats }],
   };
 }
 
@@ -115,18 +116,11 @@ describe("mergeExtractionResults — chordBeats(마디 구조 근거 코드별 �
         },
       ],
     };
+    // 텍스트 추출 전체 줄 수(2)와 정확히 같은 길이의 평평한 배열 — 0번째가 첫 줄, 1번째가 둘째 줄.
     const structure = (): StructureExtractionResult => ({
       tempo: 100,
       timeSignature: "4/4",
-      sections: [
-        {
-          sectionIndex: 0,
-          lines: [
-            { lineIndex: 0, beatsInLine: 4 },
-            { lineIndex: 1, beatsInLine: 4, chordBeats: [1] },
-          ],
-        },
-      ],
+      lines: [{ beatsInLine: 4 }, { beatsInLine: 4, chordBeats: [1] }],
     });
 
     const result = mergeExtractionResults(text, text, structure(), structure());
@@ -172,13 +166,40 @@ describe("mergeExtractionResults — chordBeats(마디 구조 근거 코드별 �
   });
 });
 
-describe("mergeExtractionResults — 텍스트 추출과 구조 추출의 구획 나누기가 어긋난 경우", () => {
-  it("두 구조 추출 호출이 서로는 일치해도 텍스트 추출과 줄 개수가 다르면 그 구획을 통째로 신뢰하지 않는다", () => {
-    // 회귀 테스트: code review 지적 — TEXT_EXTRACTION_PROMPT에만 "연속된 줄을 한 구획으로
-    // 묶어라" 지시가 있고 STRUCTURE_EXTRACTION_PROMPT에는 없어서(콘텐츠 필터링 회피), 두 구조
-    // 추출 호출이 텍스트 추출과 다르게(하지만 서로는 똑같이) 줄을 합쳐버릴 수 있다. 이땐
-    // sectionIndex:lineIndex 키가 서로 다른 물리적 줄을 가리키므로, primary/secondary가
-    // 우연히 일치해도 그 값을 신뢰하면 안 된다.
+describe("mergeExtractionResults — 전역 줄 인덱스가 구획 경계를 가로질러 대응된다 (Task 032)", () => {
+  it("텍스트 추출이 여러 구획으로 나눠도, 구조 추출의 평평한 lines 배열은 구획을 가로지르는 순서로 대응된다", () => {
+    // 구조 추출은 더 이상 구획을 스스로 나누지 않으므로, 텍스트 추출이 몇 개 구획으로 나눴든
+    // 상관없이 "전체에서 몇 번째 줄인가"라는 전역 인덱스 하나로만 대응돼야 한다.
+    const text: TextExtractionResult = {
+      key: "G",
+      sections: [
+        { type: "verse", lines: [{ lyrics: "aaaa", chords: [{ chord: "G", charOffset: 0 }] }] },
+        { type: "chorus", lines: [{ lyrics: "bbbb", chords: [{ chord: "C", charOffset: 0 }] }] },
+      ],
+    };
+    const structure: StructureExtractionResult = {
+      tempo: 100,
+      timeSignature: "4/4",
+      // 0번째 = 1절(verse)의 줄, 1번째 = 후렴(chorus)의 줄 — 구획 경계와 무관하게 순서만 맞으면 된다.
+      lines: [
+        { beatsInLine: 4, chordBeats: [1] },
+        { beatsInLine: 4, chordBeats: [2] },
+      ],
+    };
+
+    const result = mergeExtractionResults(text, text, structure, structure);
+    expect(result.sections[0]!.lines[0]!.chordEvents[0]!.beatOffset).toBe(1);
+    expect(result.sections[0]!.lines[0]!.chordEvents[0]!.needsReview).toBe(false);
+    expect(result.sections[1]!.lines[0]!.chordEvents[0]!.beatOffset).toBe(2);
+    expect(result.sections[1]!.lines[0]!.chordEvents[0]!.needsReview).toBe(false);
+  });
+});
+
+describe("mergeExtractionResults — 구조 추출이 주어진 줄 목록과 다른 개수로 답한 경우 (Task 032)", () => {
+  it("구조 추출 결과의 lines 배열 길이가 텍스트 추출 전체 줄 수와 다르면(줄을 합치거나 빠뜨림) 두 호출이 서로 일치해도 통째로 신뢰하지 않는다", () => {
+    // 구조 추출은 이제 텍스트 추출이 확정한 줄 목록을 고정 입력으로 받으므로 정상적으로는 이런
+    // 일이 드물어야 하지만(Task 032의 핵심 동기), 모델이 그래도 지시를 어기고 줄을 합칠 가능성
+    // 자체는 남아있다 — 그 경우를 안전하게 처리하는지 확인하는 회귀 테스트.
     const text: TextExtractionResult = {
       key: "G",
       sections: [
@@ -191,11 +212,11 @@ describe("mergeExtractionResults — 텍스트 추출과 구조 추출의 구획
         },
       ],
     };
-    // 구조 추출 두 호출 다 이 구획을 (텍스트 추출과 달리) 한 줄로 합쳐버렸다 — 서로는 완전히 일치.
+    // 구조 추출 두 호출 다 이 두 줄을 (지시를 어기고) 한 줄로 합쳐버렸다 — 서로는 완전히 일치.
     const misalignedStructure = (): StructureExtractionResult => ({
       tempo: 100,
       timeSignature: "4/4",
-      sections: [{ sectionIndex: 0, lines: [{ lineIndex: 0, beatsInLine: 16, chordBeats: [0] }] }],
+      lines: [{ beatsInLine: 16, chordBeats: [0] }],
     });
 
     const result = mergeExtractionResults(text, text, misalignedStructure(), misalignedStructure());
@@ -276,27 +297,23 @@ describe("mergeExtractionResults — charOffset(가사 글자 위치) self-consi
       ],
     };
     // secondary가 이 구획을 한 줄로 합쳐버렸다 — sectionIndex:lineIndex 키가 서로 다른 물리적
-    // 줄을 가리키게 되므로 그 구획은 통째로 신뢰하지 않는다.
+    // 줄을 가리키게 되므로 그 구획은 통째로 신뢰하지 않는다(텍스트 추출 두 호출 사이의 문제라
+    // 구조 추출 쪽 Task 032 변경과는 무관 — buildCharOffsetConfirmedLines 주석 참고).
     const secondary: TextExtractionResult = {
       key: "G",
       sections: [
         { type: "verse", lines: [{ lyrics: "aaaabbbb", chords: [{ chord: "G", charOffset: 0 }] }] },
       ],
     };
-    // primary와 줄 개수가 같은 구조 추출 결과를 준다 — 이 테스트가 확인하려는 건 구조 추출과의
-    // 불일치가 아니라 텍스트 추출 두 호출끼리의 구획 불일치이므로, 구조 쪽 needsReview 원인이
-    // 섞이지 않게 한다.
+    // primary(=textPrimary)와 전체 줄 개수(2)가 같은 구조 추출 결과를 준다 — 이 테스트가
+    // 확인하려는 건 구조 추출과의 불일치가 아니라 텍스트 추출 두 호출끼리의 구획 불일치이므로,
+    // 구조 쪽 needsReview 원인이 섞이지 않게 한다.
     const structure: StructureExtractionResult = {
       tempo: 100,
       timeSignature: "4/4",
-      sections: [
-        {
-          sectionIndex: 0,
-          lines: [
-            { lineIndex: 0, beatsInLine: 4, chordBeats: [0] },
-            { lineIndex: 1, beatsInLine: 4, chordBeats: [0] },
-          ],
-        },
+      lines: [
+        { beatsInLine: 4, chordBeats: [0] },
+        { beatsInLine: 4, chordBeats: [0] },
       ],
     };
 
