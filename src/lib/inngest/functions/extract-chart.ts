@@ -16,6 +16,7 @@ import { env } from "@/lib/env";
 import {
   extractLyricsAndChords,
   extractStructure,
+  extractCharOffsets,
   mediaTypeFromContentType,
   type ExtractionImage,
 } from "@/lib/anthropic/extract";
@@ -97,21 +98,14 @@ export const extractChart = inngest.createFunction(
     await markProgress(songId, "upload", "completed");
     const images = await loadImages(songId);
 
-    // 구조 추출은 이제 텍스트 추출(primary)이 확정한 구획/줄 목록을 고정 입력으로 받는다
-    // (Task 032 — extraction-schemas.ts 헤더 주석 참고, 구조 추출이 스스로 구획을 나누면
-    // 텍스트 추출과 좌표가 어긋나 곡 전체가 needsReview로 뒤덮이는 사례가 실사용에서 나왔다).
-    // 그래서 text-extraction-1을 먼저 끝내야만 구조 추출 두 호출을 시작할 수 있다 — 완전
-    // 병렬은 아니지만, text-extraction-2(charOffset self-consistency용, 구조 추출과는 무관)는
-    // text-extraction-1과 동시에 돌려 지연시간을 최소화한다.
+    // 구조 추출·코드 위치 추출(charOffset)은 이제 텍스트 추출(primary)이 확정한 구획/줄+코드
+    // 목록을 고정 입력으로 받는다(Task 032 — extraction-schemas.ts 헤더 주석 참고, 둘 다
+    // 스스로 구획을 나누면 텍스트 추출과 좌표가 어긋나 곡 전체가 needsReview로 뒤덮이는 사례가
+    // 실사용에서 나왔다). 그래서 text-extraction-1(텍스트 추출은 이제 이 한 번뿐이다 —
+    // charOffset도 전용 self-consistency 호출로 분리되어 텍스트 추출을 통째로 두 번 할 필요가
+    // 없어졌다)을 먼저 끝내야만 나머지 4개 호출을 시작할 수 있다.
     await markProgress(songId, "text_extraction", "in_progress");
-    const [textPrimary, textSecondary] = await Promise.all([
-      step.run("text-extraction-1", () => extractLyricsAndChords(images)),
-      // 텍스트 추출을 2회 호출하는 이유: beatOffset(몇 번째 박)은 구조 추출의 chordBeats로
-      // 정확한데, charOffset(그 박에 어느 글자가 붙는지)은 픽셀 정렬 눈대중이라 호출마다 결과가
-      // 갈렸다(실사용 피드백) — merge-extraction.ts가 이 두 호출을 대조해 확인되지 않은
-      // charOffset은 검토 대상으로 표시한다.
-      step.run("text-extraction-2", () => extractLyricsAndChords(images)),
-    ]);
+    const textPrimary = await step.run("text-extraction-1", () => extractLyricsAndChords(images));
     // 진행 상태는 extraction_jobs 한 행의 stage 컬럼 하나로만 표현되는데, 두 단계를 각각
     // 독립적으로 in_progress/completed 마킹하면 "text_extraction completed"를
     // "structure_extraction in_progress"보다 나중에 써서 stage 인덱스가 뒤로 되돌아간다
@@ -120,20 +114,30 @@ export const extractChart = inngest.createFunction(
     // computeOverallProgress·extracting-view.tsx의 stage 인덱스 비교 로직 추적으로 재현
     // 가능함을 확인). 그래서 text_extraction을 completed로 마킹하는 대신 곧바로
     // structure_extraction을 in_progress로 넘긴다 — 두 단계가 실제로 거의 같은 시점에
-    // 이어지므로 부정확한 표현이 아니다.
+    // 이어지므로 부정확한 표현이 아니다. charOffset 추출도 이 단계에 함께 묶인다(별도 stage를
+    // 새로 만들면 extraction-job.ts 타입·클라이언트 진행률 UI까지 건드려야 해서 이번 범위 밖).
     await markProgress(songId, "structure_extraction", "in_progress");
-    const [structurePrimary, structureSecondary] = await Promise.all([
-      // self-consistency 체크: 같은 이미지로 구조 추출을 2회 호출해 불일치 지점을 찾는다
-      // (docs/PLAN.md — 공간 추론/카운팅은 텍스트 판독보다 신뢰도가 낮다는 전제). 둘 다
-      // textPrimary가 확정한 같은 줄 목록을 입력으로 받는다.
-      step.run("structure-extraction-1", () => extractStructure(images, textPrimary)),
-      step.run("structure-extraction-2", () => extractStructure(images, textPrimary)),
-    ]);
+    const [charOffsetPrimary, charOffsetSecondary, structurePrimary, structureSecondary] =
+      await Promise.all([
+        // self-consistency 체크: 같은 이미지로 코드 위치·구조 추출을 각각 2회 호출해 불일치
+        // 지점을 찾는다(docs/PLAN.md — 공간 추론/카운팅은 텍스트 판독보다 신뢰도가 낮다는 전제).
+        // 넷 다 textPrimary가 확정한 같은 줄(+코드) 목록을 입력으로 받는다.
+        step.run("char-offset-extraction-1", () => extractCharOffsets(images, textPrimary)),
+        step.run("char-offset-extraction-2", () => extractCharOffsets(images, textPrimary)),
+        step.run("structure-extraction-1", () => extractStructure(images, textPrimary)),
+        step.run("structure-extraction-2", () => extractStructure(images, textPrimary)),
+      ]);
     await markProgress(songId, "structure_extraction", "completed");
 
     await markProgress(songId, "merge", "in_progress");
     const merged = await step.run("merge", () =>
-      mergeExtractionResults(textPrimary, textSecondary, structurePrimary, structureSecondary),
+      mergeExtractionResults(
+        textPrimary,
+        charOffsetPrimary,
+        charOffsetSecondary,
+        structurePrimary,
+        structureSecondary,
+      ),
     );
     await markProgress(songId, "merge", "completed");
 

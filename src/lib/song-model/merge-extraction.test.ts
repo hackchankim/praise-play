@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { mergeExtractionResults } from "./merge-extraction";
-import type { StructureExtractionResult, TextExtractionResult } from "./extraction-schemas";
+import type {
+  CharOffsetResult,
+  StructureExtractionResult,
+  TextExtractionResult,
+} from "./extraction-schemas";
 
-function textResult(
-  chords: { chord: string; charOffset: number }[],
-  lyrics = "0123456789",
-): TextExtractionResult {
+function textResult(chords: { chord: string }[], lyrics = "0123456789"): TextExtractionResult {
   return {
     key: "G",
     sections: [{ type: "verse", lines: [{ lyrics, chords }] }],
@@ -21,31 +22,31 @@ function structureResult(beatsInLine: number, chordBeats?: number[]): StructureE
   };
 }
 
+/** 텍스트 추출이 줄 하나짜리인 테스트용 코드 위치 추출 결과. */
+function charOffsetResult(charOffsets?: number[]): CharOffsetResult {
+  return { lines: [{ charOffsets }] };
+}
+
 describe("mergeExtractionResults — chordBeats(마디 구조 근거 코드별 박 위치)", () => {
   it("primary/secondary의 chordBeats가 개수까지 일치하면 그 값을 그대로 beatOffset으로 쓰고 needsReview를 세우지 않는다", () => {
-    const text = textResult([
-      { chord: "G", charOffset: 0 },
-      { chord: "C", charOffset: 3 },
-    ]);
+    const text = textResult([{ chord: "G" }, { chord: "C" }]);
+    const charOffsets = charOffsetResult([0, 3]);
     const primary = structureResult(8, [0, 5]);
     const secondary = structureResult(8, [0, 5]);
 
-    const result = mergeExtractionResults(text, text, primary, secondary);
+    const result = mergeExtractionResults(text, charOffsets, charOffsets, primary, secondary);
     const chords = result.sections[0]!.lines[0]!.chordEvents;
     expect(chords.map((c) => c.beatOffset)).toEqual([0, 5]);
     expect(chords.every((c) => !c.needsReview)).toBe(true);
   });
 
   it("chordBeats 개수가 실제 코드 개수와 다르면(텍스트 추출과 구조 추출의 코드 인식이 어긋남) 글자 비례 추정으로 되돌아가고 needsReview를 세운다", () => {
-    const text = textResult([
-      { chord: "G", charOffset: 0 },
-      { chord: "C", charOffset: 5 },
-      { chord: "D", charOffset: 8 },
-    ]);
+    const text = textResult([{ chord: "G" }, { chord: "C" }, { chord: "D" }]);
+    const charOffsets = charOffsetResult([0, 5, 8]);
     const primary = structureResult(8, [0, 4]); // 코드는 3개인데 chordBeats는 2개뿐
     const secondary = structureResult(8, [0, 4]);
 
-    const result = mergeExtractionResults(text, text, primary, secondary);
+    const result = mergeExtractionResults(text, charOffsets, charOffsets, primary, secondary);
     const chords = result.sections[0]!.lines[0]!.chordEvents;
     // 글자 비례 추정(estimateBeatOffset)으로 되돌아갔다는 뜻 — chordBeats를 그대로 쓴 게 아니다.
     expect(chords[0]!.beatOffset).toBe(0);
@@ -53,14 +54,12 @@ describe("mergeExtractionResults — chordBeats(마디 구조 근거 코드별 �
   });
 
   it("primary/secondary의 chordBeats가 서로 어긋나면(self-consistency 실패) 글자 비례 추정으로 되돌아가고 needsReview를 세운다", () => {
-    const text = textResult([
-      { chord: "G", charOffset: 0 },
-      { chord: "C", charOffset: 5 },
-    ]);
+    const text = textResult([{ chord: "G" }, { chord: "C" }]);
+    const charOffsets = charOffsetResult([0, 5]);
     const primary = structureResult(8, [0, 3]);
     const secondary = structureResult(8, [0, 6]); // 3과 6 — 오차범위(0.5)를 크게 벗어남
 
-    const result = mergeExtractionResults(text, text, primary, secondary);
+    const result = mergeExtractionResults(text, charOffsets, charOffsets, primary, secondary);
     const chords = result.sections[0]!.lines[0]!.chordEvents;
     expect(chords.every((c) => c.needsReview)).toBe(true);
   });
@@ -69,33 +68,33 @@ describe("mergeExtractionResults — chordBeats(마디 구조 근거 코드별 �
     // primary/secondary 모두 [2.1, 2.2]로 self-consistent하지만, 반박 그리드로 스냅하면 두
     // 코드 모두 2.0이 되어 서로 다른 코드였다는 정보가 사라진다 — 이대로 통과시키면 두 코드가
     // 화면에서 같은 칸을 두고 겹친다(code review 지적).
-    const text = textResult([
-      { chord: "G", charOffset: 0 },
-      { chord: "C", charOffset: 5 },
-    ]);
+    const text = textResult([{ chord: "G" }, { chord: "C" }]);
+    const charOffsets = charOffsetResult([0, 5]);
     const primary = structureResult(8, [2.1, 2.2]);
     const secondary = structureResult(8, [2.1, 2.2]);
 
-    const result = mergeExtractionResults(text, text, primary, secondary);
+    const result = mergeExtractionResults(text, charOffsets, charOffsets, primary, secondary);
     const chords = result.sections[0]!.lines[0]!.chordEvents;
     expect(chords.every((c) => c.needsReview)).toBe(true);
   });
 
   it("chordBeats가 beatsInLine이 그리드에 안 맞아도(예: 4.3) clamp 후 값은 항상 그리드에 남는다", () => {
-    const text = textResult([{ chord: "G", charOffset: 0 }]);
+    const text = textResult([{ chord: "G" }]);
+    const charOffsets = charOffsetResult([0]);
     const primary = structureResult(4.3, [5]);
     const secondary = structureResult(4.3, [5]);
 
-    const result = mergeExtractionResults(text, text, primary, secondary);
+    const result = mergeExtractionResults(text, charOffsets, charOffsets, primary, secondary);
     expect(result.sections[0]!.lines[0]!.chordEvents[0]!.beatOffset).toBe(4.5);
   });
 
   it("chordBeats가 아예 없으면(구조 추출이 이 기능을 답하지 않음) 글자 비례 추정으로 되돌아가고 needsReview를 세운다", () => {
-    const text = textResult([{ chord: "G", charOffset: 0 }]);
+    const text = textResult([{ chord: "G" }]);
+    const charOffsets = charOffsetResult([0]);
     const primary = structureResult(8);
     const secondary = structureResult(8);
 
-    const result = mergeExtractionResults(text, text, primary, secondary);
+    const result = mergeExtractionResults(text, charOffsets, charOffsets, primary, secondary);
     const chords = result.sections[0]!.lines[0]!.chordEvents;
     expect(chords[0]!.needsReview).toBe(true);
   });
@@ -111,7 +110,7 @@ describe("mergeExtractionResults — chordBeats(마디 구조 근거 코드별 �
           type: "verse",
           lines: [
             { lyrics: "", chords: [] },
-            { lyrics: "abcd", chords: [{ chord: "C", charOffset: 0 }] },
+            { lyrics: "abcd", chords: [{ chord: "C" }] },
           ],
         },
       ],
@@ -122,8 +121,15 @@ describe("mergeExtractionResults — chordBeats(마디 구조 근거 코드별 �
       timeSignature: "4/4",
       lines: [{ beatsInLine: 4 }, { beatsInLine: 4, chordBeats: [1] }],
     });
+    const charOffsets = (): CharOffsetResult => ({ lines: [{}, { charOffsets: [0] }] });
 
-    const result = mergeExtractionResults(text, text, structure(), structure());
+    const result = mergeExtractionResults(
+      text,
+      charOffsets(),
+      charOffsets(),
+      structure(),
+      structure(),
+    );
     const lines = result.sections[0]!.lines;
     expect(lines[0]!.chordEvents).toHaveLength(0);
     // 코드 없는 줄도 자기 beatsInLine(4)만큼은 박자 커서를 밀어야 다음 줄이 올바른 위치에서 시작한다.
@@ -134,11 +140,12 @@ describe("mergeExtractionResults — chordBeats(마디 구조 근거 코드별 �
 
   it("원값은 다르지만 반박(0.5) 그리드로 스냅하면 같은 위치면 일치로 보고 스냅된 값을 쓴다", () => {
     // 2.43과 2.61은 원값 자체는 다르지만 둘 다 그리드 위치 2.5를 말한 것으로 봐야 한다.
-    const text = textResult([{ chord: "G", charOffset: 0 }]);
+    const text = textResult([{ chord: "G" }]);
+    const charOffsets = charOffsetResult([0]);
     const primary = structureResult(8, [2.43]);
     const secondary = structureResult(8, [2.61]);
 
-    const result = mergeExtractionResults(text, text, primary, secondary);
+    const result = mergeExtractionResults(text, charOffsets, charOffsets, primary, secondary);
     const chords = result.sections[0]!.lines[0]!.chordEvents;
     expect(chords[0]!.beatOffset).toBe(2.5);
     expect(chords[0]!.needsReview).toBe(false);
@@ -147,21 +154,23 @@ describe("mergeExtractionResults — chordBeats(마디 구조 근거 코드별 �
   it("옛 오차범위(±0.5) 안에 들어도 그리드로 스냅했을 때 서로 다른 위치면 불일치로 본다", () => {
     // 2.1(→그리드 2.0)과 2.4(→그리드 2.5)는 원값 차이(0.3)로는 옛 오차범위를 통과했지만,
     // 실제로는 정박과 반박이라는 서로 다른 결정이므로 이제는 불일치로 봐야 한다.
-    const text = textResult([{ chord: "G", charOffset: 0 }]);
+    const text = textResult([{ chord: "G" }]);
+    const charOffsets = charOffsetResult([0]);
     const primary = structureResult(8, [2.1]);
     const secondary = structureResult(8, [2.4]);
 
-    const result = mergeExtractionResults(text, text, primary, secondary);
+    const result = mergeExtractionResults(text, charOffsets, charOffsets, primary, secondary);
     const chords = result.sections[0]!.lines[0]!.chordEvents;
     expect(chords[0]!.needsReview).toBe(true);
   });
 
   it("chordBeats 값이 beatsInLine을 넘으면 그 줄의 박자 폭 안으로 자른다", () => {
-    const text = textResult([{ chord: "G", charOffset: 0 }]);
+    const text = textResult([{ chord: "G" }]);
+    const charOffsets = charOffsetResult([0]);
     const primary = structureResult(4, [99]);
     const secondary = structureResult(4, [99]);
 
-    const result = mergeExtractionResults(text, text, primary, secondary);
+    const result = mergeExtractionResults(text, charOffsets, charOffsets, primary, secondary);
     expect(result.sections[0]!.lines[0]!.chordEvents[0]!.beatOffset).toBe(4);
   });
 });
@@ -173,10 +182,11 @@ describe("mergeExtractionResults — 전역 줄 인덱스가 구획 경계를 �
     const text: TextExtractionResult = {
       key: "G",
       sections: [
-        { type: "verse", lines: [{ lyrics: "aaaa", chords: [{ chord: "G", charOffset: 0 }] }] },
-        { type: "chorus", lines: [{ lyrics: "bbbb", chords: [{ chord: "C", charOffset: 0 }] }] },
+        { type: "verse", lines: [{ lyrics: "aaaa", chords: [{ chord: "G" }] }] },
+        { type: "chorus", lines: [{ lyrics: "bbbb", chords: [{ chord: "C" }] }] },
       ],
     };
+    const charOffsets: CharOffsetResult = { lines: [{ charOffsets: [0] }, { charOffsets: [0] }] };
     const structure: StructureExtractionResult = {
       tempo: 100,
       timeSignature: "4/4",
@@ -187,7 +197,7 @@ describe("mergeExtractionResults — 전역 줄 인덱스가 구획 경계를 �
       ],
     };
 
-    const result = mergeExtractionResults(text, text, structure, structure);
+    const result = mergeExtractionResults(text, charOffsets, charOffsets, structure, structure);
     expect(result.sections[0]!.lines[0]!.chordEvents[0]!.beatOffset).toBe(1);
     expect(result.sections[0]!.lines[0]!.chordEvents[0]!.needsReview).toBe(false);
     expect(result.sections[1]!.lines[0]!.chordEvents[0]!.beatOffset).toBe(2);
@@ -206,12 +216,15 @@ describe("mergeExtractionResults — 구조 추출이 주어진 줄 목록과 �
         {
           type: "verse",
           lines: [
-            { lyrics: "aaaa", chords: [{ chord: "G", charOffset: 0 }] },
-            { lyrics: "bbbb", chords: [{ chord: "C", charOffset: 0 }] },
+            { lyrics: "aaaa", chords: [{ chord: "G" }] },
+            { lyrics: "bbbb", chords: [{ chord: "C" }] },
           ],
         },
       ],
     };
+    // charOffset 쪽은 정상적으로(2줄) 응답했다고 가정 — 이 테스트가 보려는 건 구조 추출 축의
+    // 실패이므로 charOffset 쪽 needsReview 원인이 섞이지 않게 한다.
+    const charOffsets: CharOffsetResult = { lines: [{ charOffsets: [0] }, { charOffsets: [0] }] };
     // 구조 추출 두 호출 다 이 두 줄을 (지시를 어기고) 한 줄로 합쳐버렸다 — 서로는 완전히 일치.
     const misalignedStructure = (): StructureExtractionResult => ({
       tempo: 100,
@@ -219,7 +232,13 @@ describe("mergeExtractionResults — 구조 추출이 주어진 줄 목록과 �
       lines: [{ beatsInLine: 16, chordBeats: [0] }],
     });
 
-    const result = mergeExtractionResults(text, text, misalignedStructure(), misalignedStructure());
+    const result = mergeExtractionResults(
+      text,
+      charOffsets,
+      charOffsets,
+      misalignedStructure(),
+      misalignedStructure(),
+    );
     const lines = result.sections[0]!.lines;
     // 텍스트 추출 기준 줄이 2개이므로 결과도 2줄이어야 하고(구획 자체는 텍스트 추출 기준),
     // 구조 추출의 (잘못 정렬된) beatsInLine=16을 그대로 쓰면 안 된다 — 기본값(4)으로 폴백하고
@@ -231,83 +250,76 @@ describe("mergeExtractionResults — 구조 추출이 주어진 줄 목록과 �
   });
 });
 
-describe("mergeExtractionResults — charOffset(가사 글자 위치) self-consistency", () => {
-  it("두 텍스트 추출 호출의 charOffset이 정확히 일치하면 needsReview를 세우지 않는다", () => {
-    const primary = textResult([
-      { chord: "G", charOffset: 0 },
-      { chord: "C", charOffset: 5 },
-    ]);
-    const secondary = textResult([
-      { chord: "G", charOffset: 0 },
-      { chord: "C", charOffset: 5 },
-    ]);
+describe("mergeExtractionResults — charOffset(가사 글자 위치) self-consistency (Task 032)", () => {
+  // charOffset도 이제 구조 추출과 같은 원리다 — 텍스트 추출(primary)이 확정한 줄+코드 목록을
+  // 고정 입력으로 받는 전용 self-consistency 호출 2회(charOffsetPrimary/Secondary)로 판단한다.
+  it("두 코드 위치 추출 호출의 charOffset이 정확히 일치하면 needsReview를 세우지 않는다", () => {
+    const text = textResult([{ chord: "G" }, { chord: "C" }]);
+    const charOffsets = charOffsetResult([0, 5]);
     const structure = structureResult(8, [0, 4]);
 
-    const result = mergeExtractionResults(primary, secondary, structure, structure);
+    const result = mergeExtractionResults(text, charOffsets, charOffsets, structure, structure);
     const chords = result.sections[0]!.lines[0]!.chordEvents;
     expect(chords.every((c) => !c.needsReview)).toBe(true);
-    // charOffset은 여전히 primary(첫 번째 인자) 기준이다.
     expect(chords.map((c) => c.charOffset)).toEqual([0, 5]);
   });
 
-  it("두 텍스트 추출 호출의 charOffset이 하나라도 어긋나면 needsReview를 세우되 primary의 charOffset은 그대로 쓴다", () => {
+  it("두 코드 위치 추출 호출의 charOffset이 하나라도 어긋나면 needsReview를 세우되 primary의 값을 그대로 쓴다", () => {
     // beatOffset(chordBeats)은 정확한데 charOffset(어느 글자에 붙는지)만 픽셀 눈대중이라
     // 어긋나는 실제 사례(실사용 피드백)를 재현한다 — 대체할 안전한 추정치가 없으므로 값 자체는
     // 그대로 두고 검토 필요만 세운다.
-    const primary = textResult([
-      { chord: "G", charOffset: 0 },
-      { chord: "C", charOffset: 5 },
-    ]);
-    const secondary = textResult([
-      { chord: "G", charOffset: 0 },
-      { chord: "C", charOffset: 8 }, // primary와 3글자 어긋남
-    ]);
+    const text = textResult([{ chord: "G" }, { chord: "C" }]);
+    const charOffsetPrimary = charOffsetResult([0, 5]);
+    const charOffsetSecondary = charOffsetResult([0, 8]); // primary와 3글자 어긋남
     const structure = structureResult(8, [0, 4]);
 
-    const result = mergeExtractionResults(primary, secondary, structure, structure);
+    const result = mergeExtractionResults(
+      text,
+      charOffsetPrimary,
+      charOffsetSecondary,
+      structure,
+      structure,
+    );
     const chords = result.sections[0]!.lines[0]!.chordEvents;
     expect(chords.every((c) => c.needsReview)).toBe(true);
     expect(chords.map((c) => c.charOffset)).toEqual([0, 5]);
   });
 
-  it("두 텍스트 추출 호출의 코드 개수가 다르면 확인 불가로 보고 needsReview를 세운다", () => {
-    const primary = textResult([
-      { chord: "G", charOffset: 0 },
-      { chord: "C", charOffset: 5 },
-    ]);
-    const secondary = textResult([{ chord: "G", charOffset: 0 }]); // 코드 1개뿐
+  it("두 코드 위치 추출 호출의 코드 개수가 다르면 확인 불가로 보고 needsReview를 세우되 primary의 값을 그대로 쓴다", () => {
+    const text = textResult([{ chord: "G" }, { chord: "C" }]);
+    const charOffsetPrimary = charOffsetResult([0, 5]);
+    const charOffsetSecondary = charOffsetResult([0]); // 1개뿐
     const structure = structureResult(8, [0, 4]);
 
-    const result = mergeExtractionResults(primary, secondary, structure, structure);
+    const result = mergeExtractionResults(
+      text,
+      charOffsetPrimary,
+      charOffsetSecondary,
+      structure,
+      structure,
+    );
     const chords = result.sections[0]!.lines[0]!.chordEvents;
     expect(chords.every((c) => c.needsReview)).toBe(true);
+    expect(chords.map((c) => c.charOffset)).toEqual([0, 5]);
   });
 
-  it("두 텍스트 추출 호출끼리 구획의 줄 개수가 다르면 그 구획을 통째로 확인 불가로 보되 다른 줄은 멀쩡히 처리된다", () => {
-    const primary: TextExtractionResult = {
+  it("코드 위치 추출 결과의 lines 배열 길이가 텍스트 추출 전체 줄 수와 다르면 통째로 확인 불가로 보고, 그마저도 없으면 charOffset은 0으로 폴백한다", () => {
+    // 구조 추출의 assertLineCountMatches와 대응되는 회귀 테스트 — 코드 위치 추출도 같은
+    // 전역 길이 검증을 거친다(buildCharOffsetLookup).
+    const text: TextExtractionResult = {
       key: "G",
       sections: [
         {
           type: "verse",
           lines: [
-            { lyrics: "aaaa", chords: [{ chord: "G", charOffset: 0 }] },
-            { lyrics: "bbbb", chords: [{ chord: "C", charOffset: 0 }] },
+            { lyrics: "aaaa", chords: [{ chord: "G" }] },
+            { lyrics: "bbbb", chords: [{ chord: "C" }] },
           ],
         },
       ],
     };
-    // secondary가 이 구획을 한 줄로 합쳐버렸다 — sectionIndex:lineIndex 키가 서로 다른 물리적
-    // 줄을 가리키게 되므로 그 구획은 통째로 신뢰하지 않는다(텍스트 추출 두 호출 사이의 문제라
-    // 구조 추출 쪽 Task 032 변경과는 무관 — buildCharOffsetConfirmedLines 주석 참고).
-    const secondary: TextExtractionResult = {
-      key: "G",
-      sections: [
-        { type: "verse", lines: [{ lyrics: "aaaabbbb", chords: [{ chord: "G", charOffset: 0 }] }] },
-      ],
-    };
-    // primary(=textPrimary)와 전체 줄 개수(2)가 같은 구조 추출 결과를 준다 — 이 테스트가
-    // 확인하려는 건 구조 추출과의 불일치가 아니라 텍스트 추출 두 호출끼리의 구획 불일치이므로,
-    // 구조 쪽 needsReview 원인이 섞이지 않게 한다.
+    // 텍스트 추출 전체 줄 수는 2인데 코드 위치 추출은 1줄로 합쳐 응답했다.
+    const misalignedCharOffsets: CharOffsetResult = { lines: [{ charOffsets: [0] }] };
     const structure: StructureExtractionResult = {
       tempo: 100,
       timeSignature: "4/4",
@@ -317,10 +329,19 @@ describe("mergeExtractionResults — charOffset(가사 글자 위치) self-consi
       ],
     };
 
-    const result = mergeExtractionResults(primary, secondary, structure, structure);
+    const result = mergeExtractionResults(
+      text,
+      misalignedCharOffsets,
+      misalignedCharOffsets,
+      structure,
+      structure,
+    );
     const lines = result.sections[0]!.lines;
     expect(lines).toHaveLength(2);
     expect(lines[0]!.chordEvents[0]!.needsReview).toBe(true);
     expect(lines[1]!.chordEvents[0]!.needsReview).toBe(true);
+    // 대체할 안전한 추정치가 없고 charOffsetPrimary의 값조차 쓸 수 없으므로 최후 수단(0)을 쓴다.
+    expect(lines[0]!.chordEvents[0]!.charOffset).toBe(0);
+    expect(lines[1]!.chordEvents[0]!.charOffset).toBe(0);
   });
 });
