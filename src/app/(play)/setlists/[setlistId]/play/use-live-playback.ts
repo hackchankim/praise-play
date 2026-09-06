@@ -22,6 +22,7 @@ import {
   secondsUntilBeat,
 } from "@/lib/playback/section-jump";
 import type { AssetLoadEvent } from "@/lib/playback/instrument-pool";
+import { WakeLockManager, type WakeLockStatus } from "@/lib/playback/wake-lock";
 import { beatsPerBar } from "@/lib/song-model/time-signature";
 import type { Instrument, InstrumentTrack } from "@/lib/song-model/types";
 import {
@@ -38,6 +39,8 @@ export type AssetLoadStatus = "loading" | "done" | "failed";
 export interface UseLivePlaybackResult {
   state: PlaybackState;
   activationStatus: ActivationStatus;
+  /** 화면 꺼짐 방지 상태(Task 025) — 재생 중일 때만 켜진다. playback-screen.tsx의 상태 배지가 그린다. */
+  wakeLockStatus: WakeLockStatus;
   /** 악기별 로딩 진행 상황(Task 024) — 사전 로딩 화면이 항목별 체크리스트를 그리는 데 쓴다. */
   loadProgress: Partial<Record<Instrument, { status: AssetLoadStatus; percent: number }>>;
   /**
@@ -104,6 +107,7 @@ export function useLivePlayback(
   const [loadProgress, setLoadProgress] = useState<
     Partial<Record<Instrument, { status: AssetLoadStatus; percent: number }>>
   >({});
+  const [wakeLockStatus, setWakeLockStatus] = useState<WakeLockStatus>("inactive");
 
   const stateRef = useRef(state);
   useEffect(() => {
@@ -112,6 +116,7 @@ export function useLivePlayback(
 
   const engineRef = useRef<PlaybackEngine | null>(null);
   const schedulerRef = useRef(new DelayedJumpScheduler());
+  const wakeLockRef = useRef(new WakeLockManager());
   // 마지막으로 "이 섹션에 진입했다"고 확정한 인덱스. handlePositionChange가 폴링마다 다시
   // 계산하는 sectionIndexAtBeat 결과와 비교해 "섹션이 막 바뀌었는가"를 판정하는 기준값이다.
   const lastSectionIndexRef = useRef(-1);
@@ -212,6 +217,20 @@ export function useLivePlayback(
     }));
   };
 
+  /**
+   * engine.resumeIfNeeded()를 불러 그 결과(실제로 running이 됐는지)를 audioInterrupted에
+   * 반영한다(Task 025) — visibilitychange 핸들러와 togglePlay의 audioInterrupted 분기가
+   * 공유한다. 결과를 기다리지 않고 낙관적으로 지우면, 정말로 재개에 실패한 경우에도 배너가
+   * 사라져 사용자가 문제가 남아 있다는 유일한 신호를 잃는다(code review 지적).
+   */
+  const attemptResume = () => {
+    void engineRef.current?.resumeIfNeeded().then((running) => {
+      setState((prev) =>
+        prev.audioInterrupted === !running ? prev : { ...prev, audioInterrupted: !running },
+      );
+    });
+  };
+
   /** engine.ts PlaybackEngineOptions.onLoadProgress — 악기별 로딩 진행 상황을 그대로 state에 반영한다. */
   const handleLoadProgress = (event: AssetLoadEvent) => {
     setLoadProgress((prev) => {
@@ -252,6 +271,12 @@ export function useLivePlayback(
         // 세트리스트 마지막 곡까지(=체인 전체) 자연히 끝났을 때만 온다 — 자연스러운 곡 간
         // 전환(위 handleSongChange)과는 별개 신호다(engine.ts PlaybackEngineOptions.onEnd 참고).
         onEnd: () => setState((prev) => ({ ...prev, ended: true })),
+        // 엔진 자체의 자동 재개(statechange 리스너)가 실패했을 때 온다(Task 025) —
+        // visibilitychange 없이도(예: 탭이 계속 보이는 채로 일어나는 iOS 오디오 세션
+        // 인터럽션) 실패를 놓치지 않기 위한 두 번째 경로다(code review 지적).
+        onAudioInterrupted: () => {
+          setState((prev) => (prev.audioInterrupted ? prev : { ...prev, audioInterrupted: true }));
+        },
       },
     );
     engineRef.current = engine;
@@ -270,6 +295,43 @@ export function useLivePlayback(
     // queue/tracksByIndex를 이미 캡처하고 있어 문제없다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queue, tracksByIndex]);
+
+  // 화면 꺼짐 방지(Task 025, F014)를 재생 상태와 1:1로 맞춘다 — 재생 중일 때만 화면이 꺼지지
+  // 않으면 되고, 일시정지·아직 재생 전에는 굳이 켜 둘 이유가 없다(배터리 소모).
+  useEffect(() => {
+    void wakeLockRef.current.setActive(state.isPlaying).then(setWakeLockStatus);
+  }, [state.isPlaying]);
+
+  // 페이지가 다시 보일 때(visibilitychange, Task 025 F014) 두 가지를 방어적으로 재확인한다:
+  // (1) Wake Lock — 브라우저가 hidden 전환 시 스스로 해제한 sentinel을, 여전히 재생 중이라면
+  //     재획득한다(wake-lock.ts의 reacquireIfNeeded).
+  // (2) AudioContext — iOS Safari가 백그라운드 복귀 후에도 suspended로 묶어 둘 수 있다.
+  //     engine.ts의 statechange 리스너가 대부분 자동으로 처리하지만, 그 자동 재개 자체가
+  //     사용자 제스처 없는 호출이라 조용히 무시될 수 있어(스펙상 보장 없음) 여기서 한 번 더
+  //     시도하고, 그래도 실패하면 audioInterrupted를 세워 "재생 버튼을 다시 눌러달라" 안내로
+  //     넘어간다(togglePlay가 사용자 제스처로 확실히 재개하며 이 플래그를 지운다).
+  useEffect(() => {
+    // wakeLockRef.current는 useRef(new WakeLockManager())로 최초 렌더에서 한 번만 만들어져
+    // 재할당되지 않는 안정적 참조지만(schedulerRef 등 이 파일의 다른 ref들과 같은 패턴), 클린업
+    // 안에서 ref를 직접 읽으면 "DOM 노드 ref라면 위험하다"는 일반적 경고가 뜬다 — 지역 변수로
+    // 한 번 잡아 둬 그 경고를 잠재운다(동작은 동일하다).
+    const wakeLock = wakeLockRef.current;
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+      void wakeLock.reacquireIfNeeded().then(setWakeLockStatus);
+      if (!stateRef.current.isPlaying) return;
+      attemptResume();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      // 화면(재생 페이지) 자체를 벗어날 때는 반드시 반납한다 — 그렇지 않으면 재생 중에 홈으로
+      // 나가는 것처럼 탭이 계속 보이는 채로 언마운트되는 경우(코드 리뷰 지적: 클라이언트
+      // 내비게이션이라 탭이 hidden으로 가지 않는다) 위 isPlaying 동기화 이펙트도 다시 돌지
+      // 않아 실제 WakeLockSentinel이 이 세션 내내 켜진 채로 남는다.
+      void wakeLock.setActive(false);
+    };
+  }, []);
 
   // 사용자가 다른 섹션을 탭해 pending이 새로 생기면(또는 취소되면) 실제 지연 점프를 예약한다.
   // 여기를 jumpTo() 안에서 직접 하지 않고 이펙트로 분리한 이유: pending 값(오브젝트 참조) 자체가
@@ -367,6 +429,18 @@ export function useLivePlayback(
   const togglePlay = () => {
     const engine = engineRef.current;
     if (!engine) return;
+    if (stateRef.current.audioInterrupted) {
+      // 겉보기엔 재생 중(isPlaying은 여전히 true — smplr 스케줄러 자체는 멈춘 적이 없다)이지만
+      // 실제로는 AudioContext가 suspended라 소리가 안 나가던 상태다(Task 025, F014). 이 탭의
+      // 의도는 "일시정지"가 아니라 "다시 살려달라"이므로, 아래 isPlaying 분기(pause)로
+      // 떨어지지 않고 여기서 먼저 처리한다 — 지금은 진짜 사용자 제스처라 resume()이 거의 항상
+      // 받아들여지지만, 그래도 결과를 확인하고 나서 플래그를 지운다(code review 지적: 결과를
+      // 기다리지 않고 낙관적으로 지우면, 정말로 재개에 실패한 드문 경우에도 배너가 사라져
+      // 사용자가 문제가 남아 있다는 유일한 신호를 잃는다). sequencer 자체는 계속 정확한 위치를
+      // 추적해 왔으므로 별도 seek는 필요 없다.
+      attemptResume();
+      return;
+    }
     if (stateRef.current.isPlaying) {
       engine.pause();
       // engine.pause()는 오디오만 멈출 뿐, schedulerRef의 setTimeout은 벽시계 기준으로 계속
@@ -459,6 +533,7 @@ export function useLivePlayback(
   return {
     state,
     activationStatus,
+    wakeLockStatus,
     loadProgress,
     preloadAndActivate,
     togglePlay,
