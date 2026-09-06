@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { deleteSong } from "@/lib/api/songs-client";
+import { toUserFacingErrorMessage } from "@/lib/errors";
 
 interface DeleteSongButtonProps {
   songId: string;
@@ -45,7 +46,7 @@ export function DeleteSongButton({ songId, songTitle, className }: DeleteSongBut
           toast.success("곡을 삭제했습니다.");
           router.refresh();
         } catch (error) {
-          toast.error(error instanceof Error ? error.message : "곡 삭제에 실패했습니다.");
+          toast.error(toUserFacingErrorMessage(error, "곡 삭제에 실패했습니다."));
           setPending(false);
         }
       }}

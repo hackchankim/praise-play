@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { deleteSetlist } from "@/lib/api/setlists-client";
+import { toUserFacingErrorMessage } from "@/lib/errors";
 
 interface DeleteSetlistButtonProps {
   setlistId: string;
@@ -40,7 +41,7 @@ export function DeleteSetlistButton({
           toast.success("찬양콘티를 삭제했습니다.");
           router.refresh();
         } catch (error) {
-          toast.error(error instanceof Error ? error.message : "찬양콘티 삭제에 실패했습니다.");
+          toast.error(toUserFacingErrorMessage(error, "찬양콘티 삭제에 실패했습니다."));
           setPending(false);
         }
       }}

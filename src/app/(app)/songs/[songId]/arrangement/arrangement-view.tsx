@@ -12,6 +12,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/domain/error-state";
 import { PageHeader } from "@/components/domain/page-header";
 import { cn } from "@/lib/utils";
+import { toUserFacingErrorMessage } from "@/lib/errors";
 import { routes } from "@/lib/routes";
 import { songRepository } from "@/lib/repositories/song-repository";
 import { arrangementRepository } from "@/lib/repositories/arrangement-repository";
@@ -82,7 +83,7 @@ export function ArrangementView({ songId }: ArrangementViewProps) {
       setArrangement(result.arrangement);
       toast.success("편곡을 생성했습니다.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "편곡 생성에 실패했습니다.");
+      toast.error(toUserFacingErrorMessage(error, "편곡 생성에 실패했습니다."));
     } finally {
       setGenerating(false);
     }

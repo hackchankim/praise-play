@@ -23,6 +23,28 @@ import {
 // 같아서 재시도해도 결과가 달라지지 않는다).
 const MAX_OUTPUT_TOKENS = 16384;
 
+// Claude Sonnet 5는 thinking 필드를 안 주면 기본으로 "adaptive thinking"이 켜진다 — 그런데
+// max_tokens는 thinking과 실제 답변(JSON)을 합친 총 출력에 대한 하드 리밋이라, 짧고 단순한
+// 리드시트조차 모델이 답을 내놓기 전에 thinking에서 예산을 다 써버려 max_tokens에서 잘리는
+// 사례를 Task 026 통합 테스트로 실측했다(실패한 이미지로 직접 재현·수정 검증: thinking을 끄니
+// thinking_tokens=0·stop_reason="end_turn"·총 출력 약 1000토큰으로 정상 완료됨을 확인).
+//
+// 텍스트 추출(가사·코드·조표를 있는 그대로 옮겨 적는 기계적 판독)은 열린 추론이 필요
+// 없으므로 여기서만 thinking을 아예 꺼서 max_tokens 전체가 답변에만 쓰이게 한다. 구조 추출은
+// 다르다 — STRUCTURE_EXTRACTION_PROMPT 자체가 "마디 단위로 나눠서 계산하라"는 다단계 산술을
+// 명시적으로 요구하는, 이 파이프라인에서 정확도가 가장 취약한 부분이다(docs/PLAN.md의 공간
+// 추론 신뢰도 유의사항, 그리고 이번 세션에서 chordBeats·마디 단위 카운팅 지시를 여러 차례
+// 보강한 이유이기도 하다) — thinking을 꺼서 모델의 단계별 계산 능력까지 함께 없애면 truncation
+// 버그는 고쳐도 정확도가 조용히 나빠질 위험이 있다(code review 지적). 그래서 구조 추출은
+// adaptive thinking을 그대로 두고 대신 max_tokens만 넉넉히 올려 thinking+답변 둘 다 들어갈
+// 여유를 준다 — 상한을 올리는 것 자체는 실제로 쓴 토큰만큼만 과금되므로 비용 부담이 없다.
+// 단, Anthropic SDK는 max_tokens가 크면(대략 예상 소요 시간이 10분을 넘을 것으로 추정되면,
+// client.ts의 calculateNonstreamingTimeout 참고 — 이 모델 기준 대략 21,333 초과 시)
+// 논스트리밍 호출 자체를 거부한다(실측 확인: 32768로 시도하니 "Streaming is required..."
+// 에러 발생). 그 한도 안에서 넉넉히 잡는다.
+const DISABLED_THINKING = { type: "disabled" } as const;
+const STRUCTURE_MAX_OUTPUT_TOKENS = 20000;
+
 export interface ExtractionImage {
   mediaType: "image/jpeg" | "image/png" | "image/webp";
   base64: string;
@@ -125,6 +147,7 @@ export async function extractLyricsAndChords(
   const message = await client.messages.parse({
     model: ANTHROPIC_MODEL,
     max_tokens: MAX_OUTPUT_TOKENS,
+    thinking: DISABLED_THINKING,
     messages: [{ role: "user", content }],
     output_config: { format: zodOutputFormat(textExtractionResultSchema) },
   });
@@ -145,7 +168,9 @@ export async function extractStructure(
   ];
   const message = await client.messages.parse({
     model: ANTHROPIC_MODEL,
-    max_tokens: MAX_OUTPUT_TOKENS,
+    max_tokens: STRUCTURE_MAX_OUTPUT_TOKENS,
+    // 위 STRUCTURE_MAX_OUTPUT_TOKENS 주석 참고 — 여기는 thinking을 끄지 않는다(adaptive
+    // thinking 기본값 유지).
     messages: [{ role: "user", content }],
     output_config: { format: zodOutputFormat(structureExtractionResultSchema) },
   });
