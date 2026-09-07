@@ -28,12 +28,10 @@ import { SectionBadge } from "@/components/domain/section-badge";
 import { LineRow } from "./line-row";
 import {
   SECTION_TYPE_OPTIONS,
-  computeLineBeatsSpans,
   type EditableChordEvent,
   type EditableSection,
 } from "./correction-types";
 import type { SectionType } from "@/lib/song-model/types";
-import { beatsPerBar } from "@/lib/song-model/time-signature";
 
 const NO_REPEAT_VALUE = "__none__";
 
@@ -54,7 +52,6 @@ interface SectionCardProps {
   startBeat: number;
   repeatOptions: RepeatOption[];
   canMergeNext: boolean;
-  timeSignature: string;
   highlightedChordUiKey: string | null;
   onChangeType: (type: SectionType) => void;
   onChangeLengthBeats: (lengthBeats: number) => void;
@@ -65,12 +62,12 @@ interface SectionCardProps {
   onReorderLines: (activeUiKey: string, overUiKey: string) => void;
   onSplitAt: (lineIndex: number) => void;
   onLineStartBeatChange: (lineUiKey: string, startBeat: number) => void;
-  onUpdateCellText: (lineUiKey: string, cellIndex: number, text: string) => void;
-  onAddChordAtCell: (lineUiKey: string, cellIndex: number) => void;
+  onUpdateLyrics: (lineUiKey: string, lyrics: string) => void;
+  onAddChord: (lineUiKey: string) => void;
   onUpdateChord: (
     lineUiKey: string,
     chordUiKey: string,
-    patch: Partial<Pick<EditableChordEvent, "chord" | "needsReview">>,
+    patch: Partial<Pick<EditableChordEvent, "chord" | "beatOffset" | "needsReview">>,
   ) => void;
   onRemoveChord: (lineUiKey: string, chordUiKey: string) => void;
   registerChordNode: (chordUiKey: string, node: HTMLDivElement | null) => void;
@@ -82,7 +79,6 @@ export function SectionCard({
   startBeat,
   repeatOptions,
   canMergeNext,
-  timeSignature,
   highlightedChordUiKey,
   onChangeType,
   onChangeLengthBeats,
@@ -93,8 +89,8 @@ export function SectionCard({
   onReorderLines,
   onSplitAt,
   onLineStartBeatChange,
-  onUpdateCellText,
-  onAddChordAtCell,
+  onUpdateLyrics,
+  onAddChord,
   onUpdateChord,
   onRemoveChord,
   registerChordNode,
@@ -103,11 +99,6 @@ export function SectionCard({
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
-
-  const beatsPerBarCount = beatsPerBar(timeSignature);
-  // 줄마다 lineBeatsSpan을 따로 부르면 그때마다 전체 줄을 다시 정렬해 O(N^2 log N)이 된다
-  // (code review 지적) — 섹션당 한 번만 계산한다.
-  const beatsSpans = computeLineBeatsSpans(section);
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
@@ -219,18 +210,14 @@ export function SectionCard({
                 line={line}
                 lineIndex={lineIndex}
                 canSplit={lineIndex > 0}
-                cellCount={Math.max(1, Math.round(beatsSpans.get(line.uiKey) ?? 1))}
-                beatsPerBarCount={beatsPerBarCount}
                 highlightedChordUiKey={highlightedChordUiKey}
                 onStartBeatChange={(startBeatValue) =>
                   onLineStartBeatChange(line.uiKey, startBeatValue)
                 }
                 onRemoveLine={() => onRemoveLine(line.uiKey)}
                 onSplitHere={() => onSplitAt(lineIndex)}
-                onUpdateCellText={(cellIndex, text) =>
-                  onUpdateCellText(line.uiKey, cellIndex, text)
-                }
-                onAddChordAtCell={(cellIndex) => onAddChordAtCell(line.uiKey, cellIndex)}
+                onUpdateLyrics={(lyrics) => onUpdateLyrics(line.uiKey, lyrics)}
+                onAddChord={() => onAddChord(line.uiKey)}
                 onUpdateChord={(chordUiKey, patch) => onUpdateChord(line.uiKey, chordUiKey, patch)}
                 onRemoveChord={(chordUiKey) => onRemoveChord(line.uiKey, chordUiKey)}
                 registerChordNode={registerChordNode}

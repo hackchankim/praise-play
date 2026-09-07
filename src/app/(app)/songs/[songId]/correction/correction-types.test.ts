@@ -1,21 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  addChordAtCell,
+  addChord,
   collectReviewTargets,
-  computeLineBeatsSpans,
-  deriveCells,
-  lineBeatsSpan,
   reorganizeIntoMeasures,
-  updateCellText,
   updateChord,
-  type EditableLine,
+  updateLineLyrics,
   type EditableSection,
 } from "./correction-types";
 
-// ROADMAP 테스트 체크리스트: "코드 칩을 드래그로 이동하면 char_offset과 beat_offset이 함께
-// 갱신되는가". 실제 드래그(dnd-kit의 전역 포인터 센서가 얽혀 있어 합성 포인터 이벤트로 안정적
-// 재현이 어려움)를 흉내내는 대신, 드래그가 최종적으로 호출하는 순수 함수(updateChord)를 직접
-// 검증한다 — UI가 어떻게 그리든 이 함수가 옳으면 동기화는 옳다.
 function buildSection(): EditableSection {
   return {
     clientKey: "s1",
@@ -27,7 +19,7 @@ function buildSection(): EditableSection {
       {
         uiKey: "l1",
         id: "l1",
-        lyrics: "0123456789", // 10자
+        lyrics: "내모든 삶의 행동 주안",
         orderIndex: 0,
         startBeat: 0,
         chordEvents: [
@@ -46,107 +38,96 @@ function buildSection(): EditableSection {
   };
 }
 
-describe("updateChord — 드래그 시 charOffset/beatOffset 동기화", () => {
-  it("charOffset만 바뀌면(드래그) beatOffset을 줄 박자 폭 비례로 다시 계산한다", () => {
-    // l1의 박자 폭은 l2.startBeat(12) - l1.startBeat(0) = 12. 가사 10자 중 5번째 위치(절반)로
-    // 옮기면 beatOffset은 12 * 0.5 = 6이어야 한다.
+describe("updateLineLyrics — 줄(보통 마디 하나)의 가사를 자유 텍스트로 고친다 (Task 032 3단계)", () => {
+  it("줄의 lyrics를 지정한 값으로 통째로 바꾼다", () => {
     const section = buildSection();
-    const result = updateChord(section, "l1", "c1", { charOffset: 5 });
-    const chord = result.lines[0]!.chordEvents[0]!;
-    expect(chord.charOffset).toBe(5);
-    expect(chord.beatOffset).toBe(6);
+    const result = updateLineLyrics(section, "l1", "내 모든 삶의 행동 주 안에");
+    expect(result.lines[0]!.lyrics).toBe("내 모든 삶의 행동 주 안에");
+    // 코드는 건드리지 않는다.
+    expect(result.lines[0]!.chordEvents).toEqual(section.lines[0]!.chordEvents);
   });
 
-  it("charOffset과 beatOffset을 함께 지정하면(수동 입력) 준 값을 그대로 쓰고 자동 계산하지 않는다", () => {
+  it("존재하지 않는 줄 uiKey는 아무것도 바꾸지 않는다", () => {
     const section = buildSection();
-    const result = updateChord(section, "l1", "c1", { charOffset: 5, beatOffset: 99 });
-    const chord = result.lines[0]!.chordEvents[0]!;
-    expect(chord.charOffset).toBe(5);
-    expect(chord.beatOffset).toBe(99);
+    const result = updateLineLyrics(section, "nope", "x");
+    expect(result).toEqual(section);
+  });
+});
+
+describe("addChord — 줄에 새 코드를 추가한다 (Task 032 3단계)", () => {
+  it("기본 코드 C를 beatOffset 0으로 추가한다 — 추가 직후 사용자가 직접 편집한다", () => {
+    const section = buildSection();
+    const result = addChord(section, "l1");
+    const chords = result.lines[0]!.chordEvents;
+    expect(chords).toHaveLength(2);
+    const added = chords[1]!;
+    expect(added.chord).toBe("C");
+    expect(added.beatOffset).toBe(0);
+    expect(added.needsReview).toBe(false);
   });
 
-  it("beatOffset만 수동으로 바꾸면 charOffset은 그대로고 동기화 계산도 타지 않는다", () => {
+  it("존재하지 않는 줄 uiKey는 아무것도 바꾸지 않는다", () => {
     const section = buildSection();
-    const result = updateChord(section, "l1", "c1", { beatOffset: 3.5 });
-    const chord = result.lines[0]!.chordEvents[0]!;
-    expect(chord.charOffset).toBe(0);
-    expect(chord.beatOffset).toBe(3.5);
+    const result = addChord(section, "nope");
+    expect(result).toEqual(section);
+  });
+});
+
+describe("updateChord — 코드 기호·박자·검토 필요 여부를 직접 편집한다 (Task 032 3단계)", () => {
+  // charOffset 기반 드래그 동기화(estimateBeatOffset)는 Task 032 3단계로 완전히 제거했다 —
+  // 코드 위치(beatOffset)는 이제 사용자가 이 함수를 통해 숫자로 직접 지정한다.
+  it("beatOffset을 직접 지정하면 그 값을 그대로 쓴다", () => {
+    const section = buildSection();
+    const result = updateChord(section, "l1", "c1", { beatOffset: 2.5 });
+    expect(result.lines[0]!.chordEvents[0]!.beatOffset).toBe(2.5);
   });
 
-  it("needsReview를 체크박스로 해제하면(charOffset 미지정) 화면에 실제로 보이던 칸 경계를 charOffset으로 확정한다", () => {
-    // 회귀 테스트(Task 032 3단계, code review 지적) — needsReview인 코드는 charOffset이
-    // 검증되지 않은 값이라 deriveCells가 균등 분할로 보여주고 있다(원래 charOffset=9는 화면에
-    // 안 쓰이고 있었다). 체크박스로 needsReview만 끄면, 그 검증 안 된 원래 값(9)이 아니라
-    // 방금까지 실제로 보이던 균등 분할 경계(0)를 그대로 굳혀야 한다 — 그러지 않으면 "확인
-    // 완료" 직후 칸 텍스트가 다시 엉뚱하게 잘린다.
+  it("코드 기호와 검토 필요 여부를 함께 바꿀 수 있다", () => {
+    const section = buildSection();
+    const result = updateChord(section, "l1", "c1", { chord: "G", needsReview: true });
+    const chord = result.lines[0]!.chordEvents[0]!;
+    expect(chord.chord).toBe("G");
+    expect(chord.needsReview).toBe(true);
+  });
+
+  it("존재하지 않는 코드 uiKey는 아무것도 바꾸지 않는다", () => {
+    const section = buildSection();
+    const result = updateChord(section, "l1", "nope", { chord: "G" });
+    expect(result).toEqual(section);
+  });
+});
+
+describe("collectReviewTargets — needsReview인 코드를 모두 검토 대상으로 모은다 (Task 032 3단계)", () => {
+  // 코드 칩은 이제 항상 화면에 그려지므로(칸 충돌로 숨겨질 여지가 없다) 칸 배정 여부를 따로
+  // 확인할 필요가 없다 — needsReview 플래그만 보면 된다.
+  it("needsReview인 코드를 전부 대상으로 포함한다", () => {
     const section: EditableSection = {
-      ...buildSection(),
+      clientKey: "s1",
+      id: "s1",
+      type: "verse",
+      lengthBeats: 4,
+      repeatTarget: null,
       lines: [
         {
           uiKey: "l1",
           id: "l1",
-          lyrics: "0123456789",
+          lyrics: "가사",
           orderIndex: 0,
           startBeat: 0,
           chordEvents: [
-            { uiKey: "c1", id: "c1", chord: "C", charOffset: 9, beatOffset: 0, needsReview: true },
+            { uiKey: "c0", chord: "C", charOffset: 0, beatOffset: 0, needsReview: true },
+            { uiKey: "c1", chord: "G", charOffset: 0, beatOffset: 2, needsReview: false },
           ],
         },
-        { uiKey: "l2", id: "l2", lyrics: "abcde", orderIndex: 1, startBeat: 12, chordEvents: [] },
       ],
     };
-    const result = updateChord(section, "l1", "c1", { needsReview: false });
-    const chord = result.lines[0]!.chordEvents[0]!;
-    expect(chord.needsReview).toBe(false);
-    expect(chord.charOffset).toBe(0);
+    const targets = collectReviewTargets([section]);
+    expect(targets.map((t) => t.chordUiKey)).toEqual(["c0"]);
   });
 
-  it("needsReview 해제와 동시에 charOffset을 직접 지정하면(수동 입력) 그 값을 그대로 쓴다", () => {
-    const section: EditableSection = {
-      ...buildSection(),
-      lines: [
-        {
-          uiKey: "l1",
-          id: "l1",
-          lyrics: "0123456789",
-          orderIndex: 0,
-          startBeat: 0,
-          chordEvents: [
-            { uiKey: "c1", id: "c1", chord: "C", charOffset: 9, beatOffset: 0, needsReview: true },
-          ],
-        },
-        { uiKey: "l2", id: "l2", lyrics: "abcde", orderIndex: 1, startBeat: 12, chordEvents: [] },
-      ],
-    };
-    const result = updateChord(section, "l1", "c1", { needsReview: false, charOffset: 4 });
-    const chord = result.lines[0]!.chordEvents[0]!;
-    expect(chord.needsReview).toBe(false);
-    expect(chord.charOffset).toBe(4);
-  });
-
-  it("이미 needsReview가 false인 코드를 다시 false로 지정해도(변화 없음) charOffset을 건드리지 않는다", () => {
+  it("needsReview인 코드가 없으면 빈 배열을 반환한다", () => {
     const section = buildSection();
-    const result = updateChord(section, "l1", "c1", { needsReview: false });
-    expect(result.lines[0]!.chordEvents[0]!.charOffset).toBe(0);
-  });
-
-  it("가사가 없는 줄에서 charOffset을 옮겨도 beatOffset이 0으로 계산된다(0-division 방지)", () => {
-    const section: EditableSection = {
-      ...buildSection(),
-      lines: [
-        {
-          uiKey: "l1",
-          lyrics: "",
-          orderIndex: 0,
-          startBeat: 0,
-          chordEvents: [
-            { uiKey: "c1", chord: "C", charOffset: 0, beatOffset: 0, needsReview: false },
-          ],
-        },
-      ],
-    };
-    const result = updateChord(section, "l1", "c1", { charOffset: 0 });
-    expect(result.lines[0]!.chordEvents[0]!.beatOffset).toBe(0);
+    expect(collectReviewTargets([section])).toEqual([]);
   });
 });
 
@@ -219,6 +200,39 @@ describe("reorganizeIntoMeasures — 줄을 마디 단위로 재구성", () => {
     expect(lines.map((l) => l.lyrics)).toEqual(["ABCDEFGH", "IJKLMNOP"]);
     expect(lines[0]!.chordEvents.map((c) => c.beatOffset)).toEqual([0, 4]);
     expect(lines[1]!.chordEvents.map((c) => c.beatOffset)).toEqual([0, 4]);
+  });
+
+  it("charOffset이 실제 가사와 무관하게 낡아 있어도(Task 032 3단계 이후 charOffset은 더 이상 유지되지 않는다) 버킷 개수만큼 균등하게 나눈다", () => {
+    // 회귀 테스트(code review 지적, 실측 재현) — updateLineLyrics(자유 텍스트 편집)는 charOffset을
+    // 갱신하지 않으므로, 사용자가 재구성 전에 가사를 완전히 새로 고치면 코드들의 charOffset은
+    // 새 텍스트와 전혀 무관한 값으로 남는다. 그 낡은 값을 텍스트 자르는 기준으로 쓰면 안 된다.
+    const section: EditableSection = {
+      clientKey: "s1",
+      id: "s1",
+      type: "verse",
+      lengthBeats: 16,
+      repeatTarget: null,
+      lines: [
+        {
+          uiKey: "l1",
+          id: "l1",
+          lyrics: "ABCDEFGHIJKLMNOP", // 16자, 4마디로 쪼개질 예정
+          orderIndex: 0,
+          startBeat: 0,
+          chordEvents: [
+            // charOffset이 전부 0(또는 서로 같은 값)으로 낡아 있다 — 실제 가사 내용과 무관.
+            { uiKey: "c0", chord: "C", charOffset: 0, beatOffset: 0, needsReview: false },
+            { uiKey: "c1", chord: "G", charOffset: 0, beatOffset: 4, needsReview: false },
+            { uiKey: "c2", chord: "Am", charOffset: 0, beatOffset: 8, needsReview: false },
+            { uiKey: "c3", chord: "F", charOffset: 0, beatOffset: 12, needsReview: false },
+          ],
+        },
+      ],
+    };
+    const result = reorganizeIntoMeasures([section], "4/4", 1);
+    // charOffset이 전부 0이었다면 예전 방식(charOffset 기준 자르기)으로는 모든 텍스트가 첫
+    // 버킷에 쏠렸을 것이다 — 이제는 버킷 개수(4)로 균등 분할해야 한다.
+    expect(result[0]!.lines.map((l) => l.lyrics)).toEqual(["ABCD", "EFGH", "IJKL", "MNOP"]);
   });
 
   it("이미 measuresPerLine 이하로 짧은 줄은 진짜 no-op이다(같은 줄 객체를 그대로 재사용)", () => {
@@ -341,230 +355,6 @@ describe("reorganizeIntoMeasures — 줄을 마디 단위로 재구성", () => {
   });
 });
 
-describe("deriveCells — 줄을 박자 칸으로 나눈다", () => {
-  it("코드가 정수 박에 정확히 있으면 그 칸에 배정되고, 텍스트는 코드 위치 기준으로 잘린다", () => {
-    const line: EditableLine = {
-      uiKey: "l1",
-      lyrics: "존귀하신주이름",
-      orderIndex: 0,
-      startBeat: 0,
-      chordEvents: [
-        { uiKey: "c0", chord: "G", charOffset: 0, beatOffset: 0, needsReview: false },
-        { uiKey: "c1", chord: "C", charOffset: 4, beatOffset: 2, needsReview: false },
-      ],
-    };
-    const cells = deriveCells(line, 4);
-    expect(cells).toHaveLength(4);
-    // 코드가 있는 칸은 정확히 그 코드의 charOffset에서 시작한다.
-    expect(cells[0]!.chordUiKey).toBe("c0");
-    expect(cells[0]!.text.startsWith("존")).toBe(true);
-    expect(cells[2]!.chordUiKey).toBe("c1");
-    expect(cells[2]!.text.startsWith("주")).toBe(true);
-    // 코드 없는 칸(1, 3)은 이웃 경계 사이를 균등 분할한 텍스트를 가진다.
-    expect(cells[1]!.chordUiKey).toBeNull();
-    expect(cells[3]!.chordUiKey).toBeNull();
-    // 칸들을 이어붙이면 원래 가사와 정확히 같아야 한다(글자가 빠지거나 겹치지 않음).
-    expect(cells.map((c) => c.text).join("")).toBe(line.lyrics);
-  });
-
-  it("같은 칸에 코드가 두 개 몰리면 beatOffset이 더 이른 것만 배정한다", () => {
-    const line: EditableLine = {
-      uiKey: "l1",
-      lyrics: "ab",
-      orderIndex: 0,
-      startBeat: 0,
-      chordEvents: [
-        { uiKey: "early", chord: "G", charOffset: 0, beatOffset: 0.9, needsReview: false },
-        { uiKey: "late", chord: "C", charOffset: 1, beatOffset: 1.1, needsReview: false },
-      ],
-    };
-    // 둘 다 반올림하면 1번 칸(beatOffset 0.9→1, 1.1→1)에 몰린다.
-    const cells = deriveCells(line, 2);
-    expect(cells[1]!.chordUiKey).toBe("early");
-  });
-
-  it("코드가 하나도 없으면 모든 칸이 비고 텍스트는 균등 분할된다", () => {
-    const line: EditableLine = {
-      uiKey: "l1",
-      lyrics: "ABCDEFGH",
-      orderIndex: 0,
-      startBeat: 0,
-      chordEvents: [],
-    };
-    const cells = deriveCells(line, 4);
-    expect(cells.every((c) => c.chordUiKey === null)).toBe(true);
-    expect(cells.map((c) => c.text).join("")).toBe(line.lyrics);
-    expect(cells.map((c) => c.text)).toEqual(["AB", "CD", "EF", "GH"]);
-  });
-});
-
-describe("deriveCells — needsReview인 코드의 charOffset은 칸 경계로 신뢰하지 않는다 (Task 032 3단계)", () => {
-  // charOffset self-consistency가 실사용에서 거의 항상 실패한다는 게 실측으로 확인됐다 — 신뢰
-  // 못 할 charOffset을 그대로 경계로 쓰면 코드는 올바른 칸(beatOffset 기준)에 있는데 그 칸
-  // 글자 경계만 엉뚱한 위치에서 잘려 보인다. needsReview인 코드는 균등 분할 대상으로 취급해야
-  // 한다 — 단, 코드 칩 자체는 여전히 그 칸(beatOffset 기준)에 표시돼야 한다.
-  it("needsReview인 코드가 배정된 칸도 코드 칩은 그대로 표시하되, 그 charOffset은 경계로 쓰지 않고 균등 분할한다", () => {
-    const line: EditableLine = {
-      uiKey: "l1",
-      lyrics: "ABCDEFGH",
-      orderIndex: 0,
-      startBeat: 0,
-      chordEvents: [
-        // charOffset이 7이지만(끝에 가까움) needsReview라 경계로 신뢰하면 안 된다.
-        { uiKey: "c0", chord: "G", charOffset: 7, beatOffset: 2, needsReview: true },
-      ],
-    };
-    const cells = deriveCells(line, 4);
-    // 코드 칩은 beatOffset(2)에 그대로 배정된다 — needsReview와 무관하게 유지.
-    expect(cells[2]!.chordUiKey).toBe("c0");
-    // 경계는 charOffset(7)이 아니라 전체 균등 분할(2글자씩)을 따른다.
-    expect(cells.map((c) => c.text)).toEqual(["AB", "CD", "EF", "GH"]);
-    expect(cells.map((c) => c.text).join("")).toBe(line.lyrics);
-  });
-
-  it("needsReview가 아닌 코드와 섞여 있으면, 확정된 코드의 charOffset만 경계로 쓰고 needsReview인 코드는 균등 분할에 포함된다", () => {
-    const line: EditableLine = {
-      uiKey: "l1",
-      lyrics: "0123456789",
-      orderIndex: 0,
-      startBeat: 0,
-      chordEvents: [
-        { uiKey: "trusted", chord: "G", charOffset: 0, beatOffset: 0, needsReview: false },
-        // needsReview라 이 charOffset(9)은 무시되고, trusted(0)~줄 끝(10) 사이를 남은 칸(1~3)
-        // 3개로 균등 분할한 값이 대신 쓰인다.
-        { uiKey: "unreliable", chord: "C", charOffset: 9, beatOffset: 2, needsReview: true },
-      ],
-    };
-    const cells = deriveCells(line, 4);
-    expect(cells[0]!.chordUiKey).toBe("trusted");
-    expect(cells[2]!.chordUiKey).toBe("unreliable");
-    // 0~10을 3칸(1,2,3)으로 균등 분할 — 경계는 [0,3,5,8]이 된다(9가 아니다).
-    expect(cells.map((c) => c.text)).toEqual(["012", "34", "567", "89"]);
-    expect(cells.map((c) => c.text).join("")).toBe(line.lyrics);
-  });
-});
-
-describe("updateCellText — 칸 하나의 가사를 고친다", () => {
-  function buildCardSection(): EditableSection {
-    return {
-      clientKey: "s1",
-      id: "s1",
-      type: "verse",
-      lengthBeats: 4,
-      repeatTarget: null,
-      lines: [
-        {
-          uiKey: "l1",
-          id: "l1",
-          lyrics: "ABCDEFGH",
-          orderIndex: 0,
-          startBeat: 0,
-          chordEvents: [
-            { uiKey: "c0", chord: "G", charOffset: 0, beatOffset: 0, needsReview: false },
-            { uiKey: "c1", chord: "C", charOffset: 4, beatOffset: 2, needsReview: false },
-          ],
-        },
-      ],
-    };
-  }
-
-  it("칸 텍스트를 바꾸면 줄 전체 가사가 다시 조립되고 뒤따르는 코드의 charOffset이 밀린다", () => {
-    const section = buildCardSection();
-    // 0번 칸("AB")을 훨씬 긴 텍스트로 바꾼다 — 이후 칸들의 글자 위치가 밀려야 한다.
-    const result = updateCellText(section, "l1", 0, 4, "HELLO");
-    const line = result.lines[0]!;
-    expect(line.lyrics).toBe("HELLOCDEFGH");
-    // c1은 원래 2번 칸("EF")에 배정돼 있었다 — 칸 배정 자체는 유지되고 charOffset만 새 위치로.
-    const c1 = line.chordEvents.find((c) => c.uiKey === "c1")!;
-    expect(c1.beatOffset).toBe(2); // 칸 기반 편집에서는 beatOffset(=칸 인덱스)이 바뀌지 않는다.
-    const cellsAfter = deriveCells(line, 4);
-    expect(cellsAfter[2]!.chordUiKey).toBe("c1");
-  });
-
-  it("존재하지 않는 줄/칸 인덱스는 아무것도 바꾸지 않는다", () => {
-    const section = buildCardSection();
-    const result = updateCellText(section, "nope", 0, 4, "x");
-    expect(result).toEqual(section);
-    const outOfRange = updateCellText(section, "l1", 99, 4, "x");
-    expect(outOfRange.lines[0]!.lyrics).toBe(section.lines[0]!.lyrics);
-  });
-});
-
-describe("addChordAtCell — 빈 칸에 새 코드를 만든다", () => {
-  it("빈 칸에 코드를 만들면 charOffset은 그 칸 시작, beatOffset은 칸 인덱스다", () => {
-    const section: EditableSection = {
-      clientKey: "s1",
-      id: "s1",
-      type: "verse",
-      lengthBeats: 4,
-      repeatTarget: null,
-      lines: [
-        {
-          uiKey: "l1",
-          id: "l1",
-          lyrics: "ABCDEFGH",
-          orderIndex: 0,
-          startBeat: 0,
-          chordEvents: [
-            { uiKey: "c0", chord: "G", charOffset: 0, beatOffset: 0, needsReview: false },
-          ],
-        },
-      ],
-    };
-    const result = addChordAtCell(section, "l1", 2, 4);
-    const line = result.lines[0]!;
-    const newChord = line.chordEvents.find((c) => c.uiKey !== "c0")!;
-    expect(newChord.beatOffset).toBe(2);
-    expect(newChord.charOffset).toBe(4); // 2번 칸("EF")은 4번째 글자에서 시작
-  });
-
-  it("이미 코드가 있는 칸에는 새로 만들지 않는다", () => {
-    const section: EditableSection = {
-      clientKey: "s1",
-      id: "s1",
-      type: "verse",
-      lengthBeats: 4,
-      repeatTarget: null,
-      lines: [
-        {
-          uiKey: "l1",
-          id: "l1",
-          lyrics: "ABCD",
-          orderIndex: 0,
-          startBeat: 0,
-          chordEvents: [
-            { uiKey: "c0", chord: "G", charOffset: 0, beatOffset: 0, needsReview: false },
-          ],
-        },
-      ],
-    };
-    const result = addChordAtCell(section, "l1", 0, 4);
-    expect(result.lines[0]!.chordEvents).toHaveLength(1);
-  });
-});
-
-describe("computeLineBeatsSpans — 섹션 전체 줄의 박자 폭을 한 번에 계산한다", () => {
-  it("lineBeatsSpan을 각 줄에 개별로 부른 결과와 동일하다", () => {
-    const section: EditableSection = {
-      clientKey: "s1",
-      id: "s1",
-      type: "verse",
-      lengthBeats: 20,
-      repeatTarget: null,
-      lines: [
-        { uiKey: "l1", lyrics: "a", orderIndex: 0, startBeat: 0, chordEvents: [] },
-        { uiKey: "l2", lyrics: "b", orderIndex: 1, startBeat: 8, chordEvents: [] },
-        { uiKey: "l3", lyrics: "c", orderIndex: 2, startBeat: 12, chordEvents: [] },
-      ],
-    };
-    const spans = computeLineBeatsSpans(section);
-    expect(spans.get("l1")).toBe(lineBeatsSpan(section, section.lines[0]!));
-    expect(spans.get("l2")).toBe(lineBeatsSpan(section, section.lines[1]!));
-    expect(spans.get("l3")).toBe(lineBeatsSpan(section, section.lines[2]!));
-    expect([spans.get("l1"), spans.get("l2"), spans.get("l3")]).toEqual([8, 4, 8]);
-  });
-});
-
 describe("reorganizeIntoMeasures — 뒤섞인 레거시 데이터에 대한 방어", () => {
   it("charOffset 순서가 3개 버킷에 걸쳐 beatOffset 순서와 완전히 어긋나 있어도 charOffset이 그 줄의 가사 길이를 넘지 않는다", () => {
     // 회귀 테스트: code review에서 실측 확인된 버그 — 예전엔 이런 입력에서 어느 줄의 코드
@@ -627,204 +417,5 @@ describe("reorganizeIntoMeasures — 뒤섞인 레거시 데이터에 대한 방
     };
     const result = reorganizeIntoMeasures([section], "4/4", 1);
     expect(result[0]!.lines[0]!.startBeat).toBe(10);
-  });
-});
-
-describe("deriveCells — 뒤섞인 레거시 데이터에 대한 방어", () => {
-  it("코드들의 charOffset 순서가 칸 순서와 어긋나 있어도 칸 경계는 항상 앞으로만 진행하고 글자가 사라지지 않는다", () => {
-    // 회귀 테스트: code review에서 실측 확인된 버그 — 예전엔 뒤 칸(cA, 칸3)의 charOffset(0)이
-    // 앞 칸(cB, 칸0)의 charOffset(3)보다 작으면 cB의 칸이 빈 문자열로 잘리고 그 자리 텍스트가
-    // 엉뚱한 칸으로 넘어가면서, 칸을 다시 이어붙인 결과가 원래 가사보다 짧아졌다(글자 유실).
-    const line: EditableLine = {
-      uiKey: "l1",
-      lyrics: "012345",
-      orderIndex: 0,
-      startBeat: 0,
-      chordEvents: [
-        { uiKey: "cB", chord: "B", charOffset: 3, beatOffset: 0, needsReview: false },
-        { uiKey: "cA", chord: "A", charOffset: 0, beatOffset: 3, needsReview: false },
-      ],
-    };
-    const cells = deriveCells(line, 4);
-    expect(cells.map((c) => c.text).join("")).toBe(line.lyrics);
-  });
-
-  it("0번 칸의 코드가 charOffset 0보다 커도(코드 앞에 간주 가사가 있는 경우) 글자가 사라지지 않는다", () => {
-    // reorganizeIntoMeasures가 실제로 "코드보다 앞선 가사"를 포함한 줄을 만들어낼 수 있다.
-    // 0번 칸은 항상 0에서 시작한다고 취급하므로(아래 안정성 테스트 참고) 그 앞쪽 글자가
-    // 0번 칸에 전부 몰리진 않을 수 있지만, 최소한 어딘가의 칸에는 남아 있어야 한다(유실 금지).
-    const line: EditableLine = {
-      uiKey: "l1",
-      lyrics: "인트로텍스트존귀",
-      orderIndex: 0,
-      startBeat: 0,
-      chordEvents: [{ uiKey: "c0", chord: "G", charOffset: 5, beatOffset: 0, needsReview: false }],
-    };
-    const cells = deriveCells(line, 4);
-    expect(cells.map((c) => c.text).join("")).toBe(line.lyrics);
-  });
-
-  it("deriveCells → updateCellText → deriveCells를 반복해도(편집 없이) 칸 경계가 계속 흔들리지 않는다(안정성/idempotency)", () => {
-    // 회귀 테스트: code review 두 번째 라운드에서 실측 확인된 버그 — 0번 칸에 배정된 코드의
-    // "원래" charOffset(0보다 큼)을 따로 기억해뒀다가 다음 칸 경계를 보간하는 데 쓰면, 그
-    // 값이 updateCellText가 되돌려 쓰는 값(0번 칸 시작 위치 0)과 달라 재파생할 때마다 결과가
-    // 계속 바뀌었다 — 사용자가 전혀 안 건드린 칸까지 편집할 때마다 재배치되는 문제였다.
-    // charOffset 순서가 칸 순서와도 어긋난(픽업 코드 + 순서 역전) 조합으로 검증한다.
-    const initialLine: EditableLine = {
-      uiKey: "l1",
-      lyrics: "abcdefgh",
-      orderIndex: 0,
-      startBeat: 0,
-      chordEvents: [
-        { uiKey: "c0", chord: "G", charOffset: 5, beatOffset: 0, needsReview: false },
-        { uiKey: "c2", chord: "C", charOffset: 2, beatOffset: 2, needsReview: false },
-      ],
-    };
-    const cellCount = 4;
-
-    const cellsBefore = deriveCells(initialLine, cellCount);
-    // 아무 칸이나 "똑같은 값으로" 다시 써서 write-back 경로를 거치게 한다(사용자가 실제로는
-    // 아무것도 안 바꾼 것과 같은 상황).
-    const section: EditableSection = {
-      clientKey: "s1",
-      id: "s1",
-      type: "verse",
-      lengthBeats: 8,
-      repeatTarget: null,
-      lines: [initialLine],
-    };
-    const afterOneEdit = updateCellText(section, "l1", 1, cellCount, cellsBefore[1]!.text);
-    const cellsAfterOne = deriveCells(afterOneEdit.lines[0]!, cellCount);
-
-    const afterTwoEdits = updateCellText(afterOneEdit, "l1", 3, cellCount, cellsAfterOne[3]!.text);
-    const cellsAfterTwo = deriveCells(afterTwoEdits.lines[0]!, cellCount);
-
-    // 편집 내용이 실제로는 원래 텍스트와 같으므로(no-op 편집), 두 번째 파생 이후로는 칸 구성이
-    // 더 이상 바뀌지 않아야 한다.
-    expect(cellsAfterTwo.map((c) => c.text)).toEqual(cellsAfterOne.map((c) => c.text));
-    expect(cellsAfterTwo.map((c) => c.chordUiKey)).toEqual(cellsAfterOne.map((c) => c.chordUiKey));
-  });
-});
-
-describe("updateCellText — 칸 충돌로 밀려난(orphan) 코드에 대한 방어", () => {
-  it("같은 칸에 몰려 배정되지 못한 코드의 charOffset이 새 가사 길이를 넘지 않도록 자른다", () => {
-    // 회귀 테스트: code review에서 실측 확인된 버그 — 예전엔 orphan 코드의 charOffset을 전혀
-    // 건드리지 않아, 칸 텍스트를 줄일 때마다 그 코드의 charOffset만 점점 범위 밖으로 벌어졌다.
-    const section: EditableSection = {
-      clientKey: "s1",
-      id: "s1",
-      type: "verse",
-      lengthBeats: 4,
-      repeatTarget: null,
-      lines: [
-        {
-          uiKey: "l1",
-          id: "l1",
-          lyrics: "ABCDEFGHIJKL",
-          orderIndex: 0,
-          startBeat: 0,
-          chordEvents: [
-            // 둘 다 반올림하면 0번 칸에 몰린다 — early가 이기고 late는 orphan이 된다.
-            { uiKey: "early", chord: "C", charOffset: 10, beatOffset: 0.1, needsReview: false },
-            { uiKey: "late", chord: "G", charOffset: 11, beatOffset: 0.2, needsReview: false },
-          ],
-        },
-      ],
-    };
-    const result = updateCellText(section, "l1", 0, 4, "X");
-    const line = result.lines[0]!;
-    const late = line.chordEvents.find((c) => c.uiKey === "late")!;
-    expect(late.charOffset).toBeLessThanOrEqual(line.lyrics.length);
-  });
-});
-
-describe("collectReviewTargets — 칸에 배정되지 못한(orphan) 코드는 검토 대상에서 제외한다", () => {
-  it("같은 칸에 몰려 화면에 보이지 않는 코드는 needsReview여도 검토 대상에 포함되지 않는다", () => {
-    // 회귀 테스트: code review 지적 — orphan 코드는 어떤 칩으로도 그려지지 않아
-    // registerChordNode가 호출되지 않으므로, "다음 검토 항목"이 이 코드를 가리키면 스크롤·
-    // 강조가 조용히 아무 일도 하지 않는다. 애초에 화면에서 도달 가능한 코드만 세야 한다.
-    const section: EditableSection = {
-      clientKey: "s1",
-      id: "s1",
-      type: "verse",
-      lengthBeats: 4,
-      repeatTarget: null,
-      lines: [
-        {
-          uiKey: "l1",
-          id: "l1",
-          lyrics: "ABCD",
-          orderIndex: 0,
-          startBeat: 0,
-          chordEvents: [
-            { uiKey: "early", chord: "C", charOffset: 0, beatOffset: 0.1, needsReview: false },
-            // 둘 다 0번 칸으로 반올림된다 — late는 orphan이 되어 화면에 보이지 않는다.
-            { uiKey: "late", chord: "G", charOffset: 1, beatOffset: 0.2, needsReview: true },
-          ],
-        },
-      ],
-    };
-    const targets = collectReviewTargets([section]);
-    expect(targets.some((t) => t.chordUiKey === "late")).toBe(false);
-  });
-
-  it("칸에 실제로 배정된 코드는 needsReview면 그대로 검토 대상에 포함된다", () => {
-    const section: EditableSection = {
-      clientKey: "s1",
-      id: "s1",
-      type: "verse",
-      lengthBeats: 4,
-      repeatTarget: null,
-      lines: [
-        {
-          uiKey: "l1",
-          id: "l1",
-          lyrics: "ABCD",
-          orderIndex: 0,
-          startBeat: 0,
-          chordEvents: [
-            { uiKey: "c0", chord: "C", charOffset: 0, beatOffset: 0, needsReview: true },
-          ],
-        },
-      ],
-    };
-    const targets = collectReviewTargets([section]);
-    expect(targets.some((t) => t.chordUiKey === "c0")).toBe(true);
-  });
-});
-
-describe("deriveCells — 줄 가사 길이를 넘는 charOffset(레거시 데이터)에 대한 방어", () => {
-  it("중간 칸 코드의 charOffset이 가사 길이보다 훨씬 커도 글자가 사라지지 않고, 되돌려 쓴 charOffset도 가사 길이를 넘지 않는다", () => {
-    // 회귀 테스트: code review에서 실측 확인된 버그 — toEditableSections는 로드 시 charOffset을
-    // 가사 길이 안으로 검증·클램프하지 않는다. 중간 칸 코드의 charOffset이 비정상적으로 크면
-    // (예: 10글자 줄에 200) 그 칸이 뒤 칸들의 텍스트까지 통째로 삼켜버렸다.
-    const line: EditableLine = {
-      uiKey: "l1",
-      lyrics: "0123456789",
-      orderIndex: 0,
-      startBeat: 0,
-      chordEvents: [
-        { uiKey: "c0", chord: "A", charOffset: 0, beatOffset: 0, needsReview: false },
-        { uiKey: "c1", chord: "B", charOffset: 200, beatOffset: 1, needsReview: false },
-        { uiKey: "c2", chord: "C", charOffset: 5, beatOffset: 2, needsReview: false },
-      ],
-    };
-    const cells = deriveCells(line, 4);
-    expect(cells.map((c) => c.text).join("")).toBe(line.lyrics);
-
-    const section: EditableSection = {
-      clientKey: "s1",
-      id: "s1",
-      type: "verse",
-      lengthBeats: 4,
-      repeatTarget: null,
-      lines: [line],
-    };
-    // 아무 칸이나 같은 값으로 다시 써서(write-back) 코드들의 charOffset이 실제로 어떻게
-    // 저장되는지 확인한다.
-    const result = updateCellText(section, "l1", 0, 4, cells[0]!.text);
-    for (const chord of result.lines[0]!.chordEvents) {
-      expect(chord.charOffset).toBeLessThanOrEqual(result.lines[0]!.lyrics.length);
-    }
   });
 });

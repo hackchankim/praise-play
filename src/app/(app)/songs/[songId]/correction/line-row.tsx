@@ -8,26 +8,21 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ChordChip } from "@/components/domain/chord-chip";
 import { cn } from "@/lib/utils";
-import { deriveCells, type EditableChordEvent, type EditableLine } from "./correction-types";
+import type { EditableChordEvent, EditableLine } from "./correction-types";
 
 interface LineRowProps {
   line: EditableLine;
   lineIndex: number;
   canSplit: boolean;
-  /** 이 줄을 나눌 박자 칸 수 — round(lineBeatsSpan)이다. 재구성 전 원본 줄은 임의의 길이일 수
-   * 있고, 재구성한 카드는 항상 measuresPerLine*박자표 분자와 같다. */
-  cellCount: number;
-  /** 마디 경계를 표시하기 위한 박자표 분자(예: 4/4 → 4) */
-  beatsPerBarCount: number;
   highlightedChordUiKey: string | null;
   onStartBeatChange: (startBeat: number) => void;
   onRemoveLine: () => void;
   onSplitHere: () => void;
-  onUpdateCellText: (cellIndex: number, text: string) => void;
-  onAddChordAtCell: (cellIndex: number) => void;
+  onUpdateLyrics: (lyrics: string) => void;
+  onAddChord: () => void;
   onUpdateChord: (
     chordUiKey: string,
-    patch: Partial<Pick<EditableChordEvent, "chord" | "needsReview">>,
+    patch: Partial<Pick<EditableChordEvent, "chord" | "beatOffset" | "needsReview">>,
   ) => void;
   onRemoveChord: (chordUiKey: string) => void;
   registerChordNode: (chordUiKey: string, node: HTMLDivElement | null) => void;
@@ -37,14 +32,12 @@ export function LineRow({
   line,
   lineIndex,
   canSplit,
-  cellCount,
-  beatsPerBarCount,
   highlightedChordUiKey,
   onStartBeatChange,
   onRemoveLine,
   onSplitHere,
-  onUpdateCellText,
-  onAddChordAtCell,
+  onUpdateLyrics,
+  onAddChord,
   onUpdateChord,
   onRemoveChord,
   registerChordNode,
@@ -54,8 +47,13 @@ export function LineRow({
   });
   const style = { transform: CSS.Transform.toString(transform), transition };
 
-  const cells = deriveCells(line, cellCount);
-  const [editingCellIndex, setEditingCellIndex] = useState<number | null>(null);
+  const [editingChordUiKey, setEditingChordUiKey] = useState<string | null>(null);
+
+  // 코드는 항상 beatOffset(실제 시간 순서) 기준으로 나열한다 — 가사 글자 위치(charOffset)에
+  // 맞춰 코드 칩을 배치·정렬하려는 시도는 Task 032 3단계로 완전히 그만뒀다(실사용 피드백 —
+  // 글자 단위 매핑이 실사용에서 거의 항상 신뢰할 수 없었다). 가사는 이 줄(보통 마디 하나)
+  // 전체를 자유 편집 텍스트 하나로 다룬다.
+  const orderedChords = [...line.chordEvents].sort((a, b) => a.beatOffset - b.beatOffset);
 
   return (
     <div
@@ -76,50 +74,44 @@ export function LineRow({
         <GripVertical className="size-4" />
       </button>
 
-      {/* 박자 칸 그리드 — 칸 하나 = 1박. beatsPerBarCount칸마다 굵은 경계선으로 마디를 나눠
-          보여준다. 코드는 항상 칸 하나에 최대 하나만 붙는다("칸당 코드 1개"). */}
-      <div className="flex min-w-0 flex-1 gap-1">
-        {cells.map((cell, index) => {
-          const chord = cell.chordUiKey
-            ? (line.chordEvents.find((c) => c.uiKey === cell.chordUiKey) ?? null)
-            : null;
-          return (
-            <div
-              key={index}
-              className={cn(
-                "flex min-w-0 flex-1 flex-col gap-1 border-l pl-1",
-                index % beatsPerBarCount === 0 ? "border-border" : "border-border/30",
-              )}
-            >
-              <span className="text-[10px] leading-none text-muted-foreground/60">
-                {(index % beatsPerBarCount) + 1}
-              </span>
-              <BeatCellChord
-                chord={chord}
-                isEditing={editingCellIndex === index}
-                isHighlighted={chord !== null && highlightedChordUiKey === chord.uiKey}
-                onOpenEdit={() => setEditingCellIndex(index)}
-                onCloseEdit={() => setEditingCellIndex(null)}
-                onAdd={() => onAddChordAtCell(index)}
-                onUpdate={(patch) => chord && onUpdateChord(chord.uiKey, patch)}
-                onRemove={() => {
-                  setEditingCellIndex(null);
-                  if (chord) onRemoveChord(chord.uiKey);
-                }}
-                registerNode={(node) => chord && registerChordNode(chord.uiKey, node)}
-              />
-              <Input
-                value={cell.text}
-                onChange={(e) => onUpdateCellText(index, e.target.value)}
-                placeholder="가사"
-                className="h-7 px-1 text-xs"
-              />
-            </div>
-          );
-        })}
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <div className="flex flex-wrap items-center gap-1">
+          {orderedChords.map((chord) => (
+            <ChordChipEditor
+              key={chord.uiKey}
+              chord={chord}
+              isEditing={editingChordUiKey === chord.uiKey}
+              isHighlighted={highlightedChordUiKey === chord.uiKey}
+              onOpenEdit={() => setEditingChordUiKey(chord.uiKey)}
+              onCloseEdit={() => setEditingChordUiKey(null)}
+              onUpdate={(patch) => onUpdateChord(chord.uiKey, patch)}
+              onRemove={() => {
+                setEditingChordUiKey(null);
+                onRemoveChord(chord.uiKey);
+              }}
+              registerNode={(node) => registerChordNode(chord.uiKey, node)}
+            />
+          ))}
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            onClick={onAddChord}
+            aria-label="코드 추가"
+            title="코드 추가"
+          >
+            <Plus className="size-3.5" />
+          </Button>
+        </div>
+        <Input
+          value={line.lyrics}
+          onChange={(e) => onUpdateLyrics(e.target.value)}
+          placeholder="가사"
+          className="h-8 text-sm"
+        />
       </div>
 
-      <div className="mt-6 flex shrink-0 items-center gap-1">
+      <div className="mt-1 flex shrink-0 items-center gap-1">
         <label className="flex items-center gap-1 text-xs text-muted-foreground">
           <span className="hidden sm:inline">시작박자</span>
           <Input
@@ -154,30 +146,30 @@ export function LineRow({
   );
 }
 
-interface BeatCellChordProps {
-  chord: EditableChordEvent | null;
+interface ChordChipEditorProps {
+  chord: EditableChordEvent;
   isEditing: boolean;
   isHighlighted: boolean;
   onOpenEdit: () => void;
   onCloseEdit: () => void;
-  onAdd: () => void;
-  onUpdate: (patch: Partial<Pick<EditableChordEvent, "chord" | "needsReview">>) => void;
+  onUpdate: (
+    patch: Partial<Pick<EditableChordEvent, "chord" | "beatOffset" | "needsReview">>,
+  ) => void;
   onRemove: () => void;
   registerNode: (node: HTMLDivElement | null) => void;
 }
 
-/** 칸 상단의 코드 슬롯 — 코드가 없으면 추가 버튼, 있으면 칩(클릭하면 수정 패널) */
-function BeatCellChord({
+/** 코드 칩 — 클릭하면 코드 기호·박자·검토 필요 여부를 고치는 수정 패널이 뜬다. */
+function ChordChipEditor({
   chord,
   isEditing,
   isHighlighted,
   onOpenEdit,
   onCloseEdit,
-  onAdd,
   onUpdate,
   onRemove,
   registerNode,
-}: BeatCellChordProps) {
+}: ChordChipEditorProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -188,19 +180,6 @@ function BeatCellChord({
     document.addEventListener("pointerdown", handleOutside);
     return () => document.removeEventListener("pointerdown", handleOutside);
   }, [isEditing, onCloseEdit]);
-
-  if (!chord) {
-    return (
-      <button
-        type="button"
-        onClick={onAdd}
-        className="flex h-6 w-fit items-center justify-center rounded-md border border-dashed border-border text-muted-foreground hover:border-primary hover:text-primary"
-        aria-label="이 칸에 코드 추가"
-      >
-        <Plus className="size-3.5" />
-      </button>
-    );
-  }
 
   return (
     <div
@@ -227,6 +206,16 @@ function BeatCellChord({
               autoFocus
               value={chord.chord}
               onChange={(e) => onUpdate({ chord: e.target.value })}
+              className="h-7 text-xs"
+            />
+          </label>
+          <label className="flex flex-col gap-0.5 text-[11px] text-muted-foreground">
+            박자(줄 시작 기준)
+            <Input
+              type="number"
+              step="0.5"
+              value={chord.beatOffset}
+              onChange={(e) => onUpdate({ beatOffset: Number(e.target.value) || 0 })}
               className="h-7 text-xs"
             />
           </label>
