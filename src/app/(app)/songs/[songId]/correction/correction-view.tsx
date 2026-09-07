@@ -33,14 +33,13 @@ import { ImageViewer } from "./image-viewer";
 import { SongMetaForm } from "./song-meta-form";
 import { SectionCard } from "./section-card";
 import {
-  addChordAtCell,
+  addChord,
   addLine,
   buildSaveCorrectionRequest,
   collectReviewTargets,
   computeAbsoluteStartBeats,
   computeSectionDisplayLabels,
   fromSaveCorrectionRequest,
-  lineBeatsSpan,
   mergeSectionWithNext,
   reorganizeIntoMeasures,
   removeChord,
@@ -49,18 +48,12 @@ import {
   splitSectionAtLine,
   toEditableSections,
   toEditableSong,
-  updateCellText,
   updateChord,
+  updateLineLyrics,
   updateLineStartBeat,
-  type EditableLine,
   type EditableSection,
   type EditableSong,
 } from "./correction-types";
-
-/** section-card.tsx가 LineRow에 넘기는 cellCount와 같은 규칙(round(lineBeatsSpan)) */
-function lineCellCount(section: EditableSection, line: EditableLine): number {
-  return Math.max(1, Math.round(lineBeatsSpan(section, line)));
-}
 
 // 마지막 편집 후 이 정도 지나면 서버에 임시 저장한다(저장 없이 이탈해도 이어서 교정 가능해야
 // 한다는 PRD 요구 — 명시적으로 "임시 저장 후 나가기"를 누르지 않아도 보호되게 한다).
@@ -418,7 +411,6 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
             startBeat={startBeats[index]}
             repeatOptions={repeatOptions}
             canMergeNext={index < sections.length - 1}
-            timeSignature={songMeta.timeSignature}
             highlightedChordUiKey={highlightedChordUiKey}
             onChangeType={(type: SectionType) =>
               mutate((prev) => updateSectionAt(prev, section.clientKey, (s) => ({ ...s, type })))
@@ -455,22 +447,16 @@ export function CorrectionView({ songId }: CorrectionViewProps) {
                 ),
               )
             }
-            onUpdateCellText={(lineUiKey, cellIndex, text) =>
+            onUpdateLyrics={(lineUiKey, lyrics) =>
               mutate((prev) =>
-                updateSectionAt(prev, section.clientKey, (s) => {
-                  const line = s.lines.find((l) => l.uiKey === lineUiKey);
-                  const cellCount = line ? lineCellCount(s, line) : 1;
-                  return updateCellText(s, lineUiKey, cellIndex, cellCount, text);
-                }),
+                updateSectionAt(prev, section.clientKey, (s) =>
+                  updateLineLyrics(s, lineUiKey, lyrics),
+                ),
               )
             }
-            onAddChordAtCell={(lineUiKey, cellIndex) =>
+            onAddChord={(lineUiKey) =>
               mutate((prev) =>
-                updateSectionAt(prev, section.clientKey, (s) => {
-                  const line = s.lines.find((l) => l.uiKey === lineUiKey);
-                  const cellCount = line ? lineCellCount(s, line) : 1;
-                  return addChordAtCell(s, lineUiKey, cellIndex, cellCount);
-                }),
+                updateSectionAt(prev, section.clientKey, (s) => addChord(s, lineUiKey)),
               )
             }
             onUpdateChord={(lineUiKey, chordUiKey, patch) =>
