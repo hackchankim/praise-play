@@ -360,11 +360,20 @@ export interface BeatCell {
 
 /**
  * 줄 하나를 cellCount개의 박자 칸으로 나눈다(화면 표시·편집 전용 — 저장되는 형태가 아니라
- * line.lyrics/chordEvents로부터 매번 다시 계산한다). 코드가 있는 칸은 그 코드의 charOffset이
- * 칸 경계가 되고, 코드가 없는 칸들은 이웃한 경계 사이(또는 줄 시작/끝) 구간을 남은 칸 수만큼
- * 글자 수 균등 분할한다 — 그래야 사용자가 칸 글자를 고쳐 line.lyrics 길이가 바뀌어도(아래
- * updateCellText가 매번 이 함수와 같은 규칙으로 line.lyrics를 다시 조립하므로) 다음에 다시
- * 계산해도 방금 편집한 경계가 그대로 재현된다 — 별도로 "칸 경계"를 저장할 필요가 없다.
+ * line.lyrics/chordEvents로부터 매번 다시 계산한다). 코드가 있고 needsReview가 아닌 칸은 그
+ * 코드의 charOffset이 칸 경계가 되고, 그 외 칸들(코드가 없거나, 코드는 있지만 needsReview인
+ * 칸)은 이웃한 확정 경계 사이(또는 줄 시작/끝) 구간을 남은 칸 수만큼 글자 수 균등 분할한다 —
+ * 그래야 사용자가 칸 글자를 고쳐 line.lyrics 길이가 바뀌어도(아래 updateCellText가 매번 이
+ * 함수와 같은 규칙으로 line.lyrics를 다시 조립하므로) 다음에 다시 계산해도 방금 편집한 경계가
+ * 그대로 재현된다 — 별도로 "칸 경계"를 저장할 필요가 없다.
+ *
+ * needsReview인 코드의 charOffset을 경계로 신뢰하지 않는 이유(Task 032 3단계) — beatOffset은
+ * 마디 구조 self-consistency 덕에 이제 신뢰도가 높아졌지만(코드가 어느 칸에 들어가는지는
+ * 여전히 정확하다), charOffset self-consistency는 실사용에서 거의 항상 실패함을 실측으로
+ * 확인했다(글자 단위 카운팅이 마디 단위 카운팅보다 훨씬 어려운 과제로 보인다). 신뢰 못 할
+ * charOffset을 그대로 확정 경계로 쓰면 코드는 올바른 칸에 있는데 그 칸 글자 경계만 엉뚱한
+ * 위치에서 잘려 "버그처럼" 보이는 결과가 나온다(실사용 피드백) — 차라리 균등 분할로 정직하게
+ * 불확실함을 드러내는 편이 낫다.
  */
 export function deriveCells(line: EditableLine, cellCount: number): BeatCell[] {
   const count = Math.max(1, Math.round(cellCount));
@@ -408,17 +417,24 @@ export function deriveCells(line: EditableLine, cellCount: number): BeatCell[] {
   const clampedCharOffset = (chord: EditableChordEvent) =>
     Math.min(chord.charOffset, lyrics.length);
 
+  // 코드가 배정돼 있고 needsReview가 아닐 때만 그 charOffset을 확정 경계로 본다 — 위 함수
+  // 주석 참고.
+  const hasKnownBoundary = (idx: number): boolean => {
+    const chord = cellChord[idx];
+    return chord !== null && !chord.needsReview;
+  };
+
   const boundary: number[] = new Array(count).fill(0);
   let cursor = 0;
   while (cursor < count) {
-    if (cellChord[cursor]) {
+    if (hasKnownBoundary(cursor)) {
       boundary[cursor] =
         cursor === 0 ? 0 : Math.max(boundary[cursor - 1]!, clampedCharOffset(cellChord[cursor]!));
       cursor += 1;
       continue;
     }
     let runEnd = cursor;
-    while (runEnd < count && !cellChord[runEnd]) runEnd += 1;
+    while (runEnd < count && !hasKnownBoundary(runEnd)) runEnd += 1;
     // cursor가 0이면(줄 맨 앞이 코드 없이 시작) 이 구간엔 "먼저 자리를 차지하는 앞선 코드
     // 칸"이 없으므로 runLength칸이 [rangeStart, rangeEnd) 전체를 균등 분할한다(i/runLength).
     // cursor>0이면 바로 앞 칸(코드가 배정된 칸)이 이 구간의 첫 몫을 이미 차지하고 있으므로,
@@ -595,6 +611,24 @@ export function lineBeatsSpan(section: EditableSection, line: EditableLine): num
   return computeLineBeatsSpans(section).get(line.uiKey) ?? Math.max(1, section.lengthBeats);
 }
 
+/**
+ * deriveCells가 지금 이 코드에 배정한 칸이 실제로 화면에 보여주고 있는 시작 글자 위치를
+ * 구한다(그 칸 앞의 모든 칸 텍스트 길이의 합) — updateChord가 needsReview 해제 시 그 값을
+ * "확정"으로 굳히는 데 쓴다(바로 아래 clearingReview 주석 참고).
+ */
+function currentCellStart(
+  line: EditableLine,
+  cellCount: number,
+  chordUiKey: string,
+): number | undefined {
+  let running = 0;
+  for (const cell of deriveCells(line, cellCount)) {
+    if (cell.chordUiKey === chordUiKey) return running;
+    running += cell.text.length;
+  }
+  return undefined;
+}
+
 export function updateChord(
   section: EditableSection,
   lineUiKey: string,
@@ -607,6 +641,23 @@ export function updateChord(
       if (line.uiKey !== lineUiKey) return line;
 
       const chordIndex = line.chordEvents.findIndex((chord) => chord.uiKey === chordUiKey);
+      const targetChord = chordIndex === -1 ? undefined : line.chordEvents[chordIndex];
+
+      // "검토 필요" 체크박스를 꺼서 needsReview를 true→false로 내릴 때 charOffset을 함께
+      // 지정하지 않았다면, 지금 화면에 실제로 보이고 있는 칸 경계(needsReview=true라
+      // deriveCells가 균등 분할로 보여주고 있던 값)를 그대로 charOffset으로 확정한다. 그러지
+      // 않으면 체크박스를 끄는 순간 화면에 없던(원래 LLM이 준, 한 번도 검증되지 않은)
+      // charOffset이 갑자기 hasKnownBoundary(deriveCells)를 통과해 경계로 쓰이면서, 사용자가
+      // "확인 완료"로 표시한 직후 칸 텍스트가 다시 엉뚱하게 잘리는 문제가 생긴다(code review
+      // 지적) — 방금 검토를 마쳤다고 믿은 화면이 그대로 유지돼야 한다.
+      const clearingReview =
+        patch.needsReview === false &&
+        targetChord?.needsReview === true &&
+        patch.charOffset === undefined;
+      const lockedCharOffset = clearingReview
+        ? currentCellStart(line, lineBeatsSpan(section, line), chordUiKey)
+        : undefined;
+
       // 드래그로 charOffset만 바뀌고 beatOffset은 호출부가 함께 지정하지 않았다면(수동 입력과
       // 구분하는 지점) 가사 위치 비례로 beatOffset을 다시 계산해 둘을 동기화한다 — 추출 잡
       // 병합(merge-extraction.ts)의 초기 추정과 같은 공식을 쓴다.
@@ -618,9 +669,9 @@ export function updateChord(
         chordEvents: line.chordEvents.map((chord, index) => {
           if (chord.uiKey !== chordUiKey) return chord;
           const nextCharOffset =
-            patch.charOffset === undefined
-              ? chord.charOffset
-              : Math.max(0, Math.min(patch.charOffset, line.lyrics.length));
+            patch.charOffset !== undefined
+              ? Math.max(0, Math.min(patch.charOffset, line.lyrics.length))
+              : (lockedCharOffset ?? chord.charOffset);
           return {
             ...chord,
             ...patch,
