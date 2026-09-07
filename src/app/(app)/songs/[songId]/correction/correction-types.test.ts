@@ -73,6 +73,63 @@ describe("updateChord — 드래그 시 charOffset/beatOffset 동기화", () => 
     expect(chord.beatOffset).toBe(3.5);
   });
 
+  it("needsReview를 체크박스로 해제하면(charOffset 미지정) 화면에 실제로 보이던 칸 경계를 charOffset으로 확정한다", () => {
+    // 회귀 테스트(Task 032 3단계, code review 지적) — needsReview인 코드는 charOffset이
+    // 검증되지 않은 값이라 deriveCells가 균등 분할로 보여주고 있다(원래 charOffset=9는 화면에
+    // 안 쓰이고 있었다). 체크박스로 needsReview만 끄면, 그 검증 안 된 원래 값(9)이 아니라
+    // 방금까지 실제로 보이던 균등 분할 경계(0)를 그대로 굳혀야 한다 — 그러지 않으면 "확인
+    // 완료" 직후 칸 텍스트가 다시 엉뚱하게 잘린다.
+    const section: EditableSection = {
+      ...buildSection(),
+      lines: [
+        {
+          uiKey: "l1",
+          id: "l1",
+          lyrics: "0123456789",
+          orderIndex: 0,
+          startBeat: 0,
+          chordEvents: [
+            { uiKey: "c1", id: "c1", chord: "C", charOffset: 9, beatOffset: 0, needsReview: true },
+          ],
+        },
+        { uiKey: "l2", id: "l2", lyrics: "abcde", orderIndex: 1, startBeat: 12, chordEvents: [] },
+      ],
+    };
+    const result = updateChord(section, "l1", "c1", { needsReview: false });
+    const chord = result.lines[0]!.chordEvents[0]!;
+    expect(chord.needsReview).toBe(false);
+    expect(chord.charOffset).toBe(0);
+  });
+
+  it("needsReview 해제와 동시에 charOffset을 직접 지정하면(수동 입력) 그 값을 그대로 쓴다", () => {
+    const section: EditableSection = {
+      ...buildSection(),
+      lines: [
+        {
+          uiKey: "l1",
+          id: "l1",
+          lyrics: "0123456789",
+          orderIndex: 0,
+          startBeat: 0,
+          chordEvents: [
+            { uiKey: "c1", id: "c1", chord: "C", charOffset: 9, beatOffset: 0, needsReview: true },
+          ],
+        },
+        { uiKey: "l2", id: "l2", lyrics: "abcde", orderIndex: 1, startBeat: 12, chordEvents: [] },
+      ],
+    };
+    const result = updateChord(section, "l1", "c1", { needsReview: false, charOffset: 4 });
+    const chord = result.lines[0]!.chordEvents[0]!;
+    expect(chord.needsReview).toBe(false);
+    expect(chord.charOffset).toBe(4);
+  });
+
+  it("이미 needsReview가 false인 코드를 다시 false로 지정해도(변화 없음) charOffset을 건드리지 않는다", () => {
+    const section = buildSection();
+    const result = updateChord(section, "l1", "c1", { needsReview: false });
+    expect(result.lines[0]!.chordEvents[0]!.charOffset).toBe(0);
+  });
+
   it("가사가 없는 줄에서 charOffset을 옮겨도 beatOffset이 0으로 계산된다(0-division 방지)", () => {
     const section: EditableSection = {
       ...buildSection(),
@@ -338,6 +395,52 @@ describe("deriveCells — 줄을 박자 칸으로 나눈다", () => {
     expect(cells.every((c) => c.chordUiKey === null)).toBe(true);
     expect(cells.map((c) => c.text).join("")).toBe(line.lyrics);
     expect(cells.map((c) => c.text)).toEqual(["AB", "CD", "EF", "GH"]);
+  });
+});
+
+describe("deriveCells — needsReview인 코드의 charOffset은 칸 경계로 신뢰하지 않는다 (Task 032 3단계)", () => {
+  // charOffset self-consistency가 실사용에서 거의 항상 실패한다는 게 실측으로 확인됐다 — 신뢰
+  // 못 할 charOffset을 그대로 경계로 쓰면 코드는 올바른 칸(beatOffset 기준)에 있는데 그 칸
+  // 글자 경계만 엉뚱한 위치에서 잘려 보인다. needsReview인 코드는 균등 분할 대상으로 취급해야
+  // 한다 — 단, 코드 칩 자체는 여전히 그 칸(beatOffset 기준)에 표시돼야 한다.
+  it("needsReview인 코드가 배정된 칸도 코드 칩은 그대로 표시하되, 그 charOffset은 경계로 쓰지 않고 균등 분할한다", () => {
+    const line: EditableLine = {
+      uiKey: "l1",
+      lyrics: "ABCDEFGH",
+      orderIndex: 0,
+      startBeat: 0,
+      chordEvents: [
+        // charOffset이 7이지만(끝에 가까움) needsReview라 경계로 신뢰하면 안 된다.
+        { uiKey: "c0", chord: "G", charOffset: 7, beatOffset: 2, needsReview: true },
+      ],
+    };
+    const cells = deriveCells(line, 4);
+    // 코드 칩은 beatOffset(2)에 그대로 배정된다 — needsReview와 무관하게 유지.
+    expect(cells[2]!.chordUiKey).toBe("c0");
+    // 경계는 charOffset(7)이 아니라 전체 균등 분할(2글자씩)을 따른다.
+    expect(cells.map((c) => c.text)).toEqual(["AB", "CD", "EF", "GH"]);
+    expect(cells.map((c) => c.text).join("")).toBe(line.lyrics);
+  });
+
+  it("needsReview가 아닌 코드와 섞여 있으면, 확정된 코드의 charOffset만 경계로 쓰고 needsReview인 코드는 균등 분할에 포함된다", () => {
+    const line: EditableLine = {
+      uiKey: "l1",
+      lyrics: "0123456789",
+      orderIndex: 0,
+      startBeat: 0,
+      chordEvents: [
+        { uiKey: "trusted", chord: "G", charOffset: 0, beatOffset: 0, needsReview: false },
+        // needsReview라 이 charOffset(9)은 무시되고, trusted(0)~줄 끝(10) 사이를 남은 칸(1~3)
+        // 3개로 균등 분할한 값이 대신 쓰인다.
+        { uiKey: "unreliable", chord: "C", charOffset: 9, beatOffset: 2, needsReview: true },
+      ],
+    };
+    const cells = deriveCells(line, 4);
+    expect(cells[0]!.chordUiKey).toBe("trusted");
+    expect(cells[2]!.chordUiKey).toBe("unreliable");
+    // 0~10을 3칸(1,2,3)으로 균등 분할 — 경계는 [0,3,5,8]이 된다(9가 아니다).
+    expect(cells.map((c) => c.text)).toEqual(["012", "34", "567", "89"]);
+    expect(cells.map((c) => c.text).join("")).toBe(line.lyrics);
   });
 });
 
